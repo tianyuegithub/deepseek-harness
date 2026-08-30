@@ -213,12 +213,32 @@ export interface RequestContext {
 export type RequestHeaderReason = 'initial' | 'resume' | 'change' | 'series'
 
 /**
+ * Durable identity of one repository-external producer whose log-only events
+ * are required to interpret a session faithfully. The exact canonical tuple
+ * is recorded before the producer's first event in each session.
+ */
+export interface ExternalSessionEventProducerDeclaration {
+  /** Published package identity, for example `@nous/dsh-pactflow`. */
+  readonly producer: string
+  /** Exact resolved package version that owns this payload vocabulary. */
+  readonly version: string
+  /** Sorted exact log-only event names this producer may append. */
+  readonly eventTypes: readonly string[]
+}
+
+/**
  * The merge-extensible, append-only source of truth for an agent interaction.
  * Message history is derived from this log. Every event is lossless JSON and
  * sequence numbers stay contiguous, including raw chunks, so persistence can
  * store the canonical log verbatim.
  */
 export interface SessionEventMap {
+  /**
+   * Declares one required repository-external log-only vocabulary before its
+   * first event. Persistence admits the declared names only while an exact
+   * matching producer registration is present.
+   */
+  'session/external-event-producer': ExternalSessionEventProducerDeclaration
   /**
    * Opens turn `turn` before the loop claims queued input or runs pre-step.
    * Rejection, empty input, cancellation, or failure may close it with no

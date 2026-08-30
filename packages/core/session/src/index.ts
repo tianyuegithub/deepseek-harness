@@ -19,6 +19,7 @@ import { snapshotJsonValue } from './json.ts'
 import { deriveEventMessage, SurfaceManager } from './surface.ts'
 import type { SessionSurface } from './surface.ts'
 import { foldRequestHeader } from './request-header.ts'
+import { ExternalSessionEventProducerRegistry } from './external-event-producers.ts'
 
 export * from './types.ts'
 export { SessionPreparation } from './preparation.ts'
@@ -33,6 +34,15 @@ export type { SessionSurface, SurfaceFoldReplacement, SurfaceFoldResult } from '
 export { deriveEventMessage, foldSurface, isAppendSurfaceEvent, isReplacementSurfaceEvent, isSurfaceEvent, isSurfaceEligibleType } from './surface.ts'
 export { canonicalHeader, foldRequestHeader, headerEquals } from './request-header.ts'
 export { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
+export {
+  assertExternalSessionEventProducerDeclaration,
+  externalSessionEventProducerEquals,
+  ExternalSessionEventProducerRegistry,
+} from './external-event-producers.ts'
+export type {
+  ExternalSessionEventProducerHandle,
+  ExternalSessionEventProducerRegistration,
+} from './external-event-producers.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -790,9 +800,12 @@ export class SessionForkError extends Error {
 export class SessionStore extends Service {
   private store = new Map<SessionId, SessionEntry>()
   private counter = 0
+  /** Required repository-external log-only event producers. */
+  readonly externalEventProducers: ExternalSessionEventProducerRegistry
 
   constructor(ctx: Context) {
     super(ctx, 'sessions')
+    this.externalEventProducers = new ExternalSessionEventProducerRegistry(ctx)
     ctx.inject(['typert'], (typeCtx) => {
       typeCtx.typert.lookups.register('session', {
         parameter: 'session',

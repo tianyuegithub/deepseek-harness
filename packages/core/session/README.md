@@ -49,6 +49,21 @@ session.deriveMessages()         // the derived model history
 
 Surface events (`user/message`, `assistant/message`, `tool/result`) must declare how they join the ordered surface; raw chunks, boundaries, and other log-only events never produce a message.
 
+### Append repository-external events
+
+An external Host package registers one exact required log-only vocabulary through `ctx.sessions.externalEventProducers`. The returned handle validates payloads and writes `session/external-event-producer` once before the producer's first event. External packages do not call `session.append()` directly for durable custom events:
+
+```text
+const events = ctx.sessions.externalEventProducers.register({
+  producer: '@vendor/dsh-extension',
+  version: '1.0.0',
+  eventTypes: ['extension/state-recorded'],
+})
+events.append(session, 'extension/state-recorded', { v: 1, state: 'ready' })
+```
+
+Cold persistence reads require the exact producer/version/event-set registration. Removing the owning Bundle preserves the raw session artifact but makes that history unsupported until a matching producer or an explicit historical read-compatible registration is installed again.
+
 ### Fork a session
 
 `ctx.sessions.fork(source, boundary?, childSessionId?)` selects source events through an inclusive `boundary` seq (default: the current last event), requires the prefix to end outside an open turn, and creates a live child session with lineage metadata. A tool-time delegation that must branch mid-turn clips to a completed prefix instead.
@@ -80,6 +95,7 @@ The package is built on event sourcing: a `Session` is an append-only log of typ
 | File | Role |
 |---|---|
 | [`src/index.ts`](src/index.ts) | Plugin entry: `SessionStore` service, store lifecycle, `fork`, `flush` |
+| [`src/external-event-producers.ts`](src/external-event-producers.ts) | Fiber-scoped external producer registration, bound append, and durable declaration validation |
 | [`src/types.ts`](src/types.ts) | `SessionEventMap`, `SessionEvent`, `UserMessage`, `SessionHeader`, `TurnEndReasonMap` |
 | [`src/surface.ts`](src/surface.ts) | Ordered surface projection, replacement validation, `deriveEventMessage` |
 | [`src/request-header.ts`](src/request-header.ts) | `request/header` folding and reconstruction |
@@ -170,7 +186,7 @@ Logging causes no invalidation, and exact reconstruction preserves request-prefi
 These limits define when the session store needs special care. They are current package constraints, not a task backlog.
 
 - **`fork()` cuts only at stable boundaries of live sessions** — the selected prefix must end outside an open turn and the source must be in the store; forking a persisted-but-unloaded session is excluded from the [fork API](../../../.agents/notes/implemented/feature/2026-06-30-session-store-fork-api.md).
-- **`SESSION_FORMAT_VERSION` stays pinned at `0`** — pre-release, no broad compatibility implied: `Session` accepts only current seed shapes, a backend refuses any other version, and every unknown event type refuses reconstruction ([mechanism](../../../.agents/notes/implemented/simplification/2026-08-25-fail-closed-session-event-vocabulary.md)).
+- **`SESSION_FORMAT_VERSION` stays pinned at `0`** — pre-release, no broad compatibility implied: `Session` accepts only current seed shapes, a backend refuses any other version, and every unknown event type refuses reconstruction unless an earlier durable external-producer declaration and an exact active registration admit it ([base mechanism](../../../.agents/notes/implemented/simplification/2026-08-25-fail-closed-session-event-vocabulary.md), [external contract](../../../.agents/notes/implemented/architecture/2026-08-29-durable-external-session-event-producers.md)).
 - **`TurnEndReasonMap` omits the ACP-named `refusal` / `max_turn_requests` variants** — producer-gated: they land when an adapter or the loop first emits them.
 - **No session tree beyond fork** — a pi-style entry tree over branched sessions is deferred unless a consumer needs more than boundary-based forking.
 

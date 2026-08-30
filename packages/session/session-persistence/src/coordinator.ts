@@ -15,7 +15,7 @@ import {
   snapshotJsonValue,
   snapshotSessionEvent,
 } from '@deepseek-ai/dsh-session'
-import type { Session, SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
+import type { ExternalSessionEventProducerDeclaration, Session, SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { BorrowedSessionSource, SessionInspection, SessionLocation } from './index.ts'
 import { SessionPersistenceNotFoundError } from './errors.ts'
@@ -341,6 +341,12 @@ function needsLegacyPrefix(event: SessionEvent): boolean {
     default:
       return false
   }
+}
+
+/** Whether suffix admission needs an earlier external-producer declaration. */
+function needsExternalProducerPrefix(event: SessionEvent): boolean {
+  return event.type !== 'session/external-event-producer'
+    && !KNOWN_SESSION_EVENT_TYPES.has(event.type)
 }
 
 /** Upgrade the removed steering surface event into its current user-message equivalent. */
@@ -937,7 +943,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       if (suffix === undefined) throw new SessionPersistenceNotFoundError(id)
       this.assertStoredId(id, suffix.meta)
       this.assertVersion(suffix.meta)
-      if (suffix.events.some(needsLegacyPrefix)) {
+      if (suffix.events.some(needsLegacyPrefix) || suffix.events.some(needsExternalProducerPrefix)) {
         const whole = await this.readStoredPrefix(id, signal)
         return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq) }
       }
@@ -1137,8 +1143,35 @@ export class PersistenceCoordinator<TornMarker = unknown> {
    * does not, so those keep their specific diagnostics.
    */
   private assertEventsSupported(meta: SessionHeader, events: readonly SessionEvent[]): void {
+    const admitted = new Map<string, string>()
+    for (const eventType of KNOWN_SESSION_EVENT_TYPES) admitted.set(eventType, 'DSH core')
+    const declaredProducers = new Set<string>()
     for (const event of events) {
-      if (KNOWN_SESSION_EVENT_TYPES.has(event.type)) continue
+      if (event.type === 'session/external-event-producer') {
+        let declaration: ExternalSessionEventProducerDeclaration
+        try {
+          declaration = this.ctx.sessions.externalEventProducers.requireReadable(event.data)
+        } catch (error: unknown) {
+          throw this.unsupported(
+            meta,
+            `session "${meta.id}" has unsupported external event producer declaration at seq ${event.seq}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+        const producerIdentity = `${declaration.producer}@${declaration.version}`
+        if (declaredProducers.has(producerIdentity)) {
+          throw this.unsupported(meta, `session "${meta.id}" repeats external event producer "${producerIdentity}" at seq ${event.seq}`)
+        }
+        for (const eventType of declaration.eventTypes) {
+          const owner = admitted.get(eventType)
+          if (owner !== undefined) {
+            throw this.unsupported(meta, `session "${meta.id}" external producer "${producerIdentity}" claims event type "${eventType}" already owned by ${owner}`)
+          }
+          admitted.set(eventType, producerIdentity)
+        }
+        declaredProducers.add(producerIdentity)
+        continue
+      }
+      if (admitted.has(event.type)) continue
       throw this.unsupported(meta, `session "${meta.id}" contains event type "${event.type}" (seq ${event.seq}) unknown to this harness; refusing to interpret the log — it was likely written by a newer harness`)
     }
   }

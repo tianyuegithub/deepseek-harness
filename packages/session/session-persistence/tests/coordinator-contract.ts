@@ -39,6 +39,34 @@ export interface CoordinatorFixture {
 /** A constant absolute cwd; jsonl keys directories off it, memory/sqlite ignore it. */
 const WORK = '/w'
 const OTHER = '/other'
+const EXTERNAL_PRODUCER = '@tests/external-session-events'
+const EXTERNAL_VERSION = '1.0.0'
+const EXTERNAL_EVENT = 'external-test/recorded'
+
+/** One declared repository-external log-only event. */
+function externalLog(options: {
+  version?: string
+  eventTypes?: readonly string[]
+  declarationFirst?: boolean
+} = {}): SessionEvent[] {
+  const declaration = {
+    type: 'session/external-event-producer',
+    seq: options.declarationFirst === false ? 1 : 0,
+    time: 1,
+    data: {
+      producer: EXTERNAL_PRODUCER,
+      version: options.version ?? EXTERNAL_VERSION,
+      eventTypes: options.eventTypes ?? [EXTERNAL_EVENT],
+    },
+  }
+  const external = {
+    type: EXTERNAL_EVENT,
+    seq: options.declarationFirst === false ? 0 : 1,
+    time: 2,
+    data: { v: 1, value: 'persisted' },
+  }
+  return (options.declarationFirst === false ? [external, declaration] : [declaration, external]) as unknown as SessionEvent[]
+}
 
 /** Append a whole event log to a live session, event by event (drives session/event). */
 function send(session: Session, events: readonly SessionEvent[]): void {
@@ -1369,6 +1397,105 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
         const failure = await ctx.sessionPersistence.load(required.id).then(() => undefined, (error: unknown) => error as Error)
         expect(failure?.name).toBe('SessionFormatUnsupportedError')
         expect(failure?.message).toMatch(/event type "future\/event".*unknown to this harness/)
+      } finally {
+        await fiber.dispose()
+        await fix.cleanup()
+      }
+    })
+
+    it('cold-reads a declared external event only with the exact producer registration', async () => {
+      const fix = await makeFixture()
+      const { ctx, fiber } = await freshCtx(fix)
+      try {
+        const producer = ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: EXTERNAL_VERSION,
+          eventTypes: [EXTERNAL_EVENT] as const,
+        })
+        const m = meta('external-round-trip', WORK)
+        await ctx.sessionPersistence.create(m)
+        await ctx.sessionPersistence.append(m.id, externalLog())
+
+        await expect(ctx.sessionPersistence.load(m.id)).resolves.toMatchObject({
+          events: [
+            { type: 'session/external-event-producer' },
+            { type: EXTERNAL_EVENT, data: { v: 1, value: 'persisted' } },
+          ],
+        })
+
+        producer.dispose()
+        const missingFailure = await ctx.sessionPersistence.load(m.id)
+          .then(() => undefined, (error: unknown) => error as Error)
+        expect(missingFailure?.name).toBe('SessionFormatUnsupportedError')
+        expect(missingFailure?.message)
+          .toMatch(new RegExp(`required external session event producer.*${EXTERNAL_PRODUCER}`))
+        const location = ctx.sessionPersistence.locate(m)
+        if (location !== undefined) expect(missingFailure?.message).toContain(location.path)
+
+        ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: EXTERNAL_VERSION,
+          eventTypes: [EXTERNAL_EVENT] as const,
+        })
+        await expect(ctx.sessionPersistence.load(m.id)).resolves.toMatchObject({
+          events: [{ type: 'session/external-event-producer' }, { type: EXTERNAL_EVENT }],
+        })
+      } finally {
+        await fiber.dispose()
+        await fix.cleanup()
+      }
+    })
+
+    it('rejects external events before declaration and mismatched producer tuples', async () => {
+      const fix = await makeFixture()
+      const { ctx, fiber } = await freshCtx(fix)
+      try {
+        ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: EXTERNAL_VERSION,
+          eventTypes: [EXTERNAL_EVENT] as const,
+        })
+
+        const unordered = meta('external-before-declaration', WORK)
+        await ctx.sessionPersistence.create(unordered)
+        await ctx.sessionPersistence.append(unordered.id, externalLog({ declarationFirst: false }))
+        await expect(ctx.sessionPersistence.load(unordered.id))
+          .rejects.toThrow(new RegExp(`event type "${EXTERNAL_EVENT}".*unknown`))
+
+        const wrongVersion = meta('external-wrong-version', WORK)
+        await ctx.sessionPersistence.create(wrongVersion)
+        await ctx.sessionPersistence.append(wrongVersion.id, externalLog({ version: '2.0.0' }))
+        await expect(ctx.sessionPersistence.load(wrongVersion.id))
+          .rejects.toThrow(/version "2\.0\.0" is not registered/)
+
+        const wrongSet = meta('external-wrong-set', WORK)
+        await ctx.sessionPersistence.create(wrongSet)
+        await ctx.sessionPersistence.append(wrongSet.id, externalLog({
+          eventTypes: [EXTERNAL_EVENT, 'external-test/second'],
+        }))
+        await expect(ctx.sessionPersistence.load(wrongSet.id))
+          .rejects.toThrow(/has a different event set/)
+      } finally {
+        await fiber.dispose()
+        await fix.cleanup()
+      }
+    })
+
+    it('readFrom falls back to the declaration prefix for an external suffix', async () => {
+      const fix = await makeFixture()
+      const { ctx, fiber } = await freshCtx(fix)
+      try {
+        ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: EXTERNAL_VERSION,
+          eventTypes: [EXTERNAL_EVENT] as const,
+        })
+        const m = meta('external-suffix', WORK)
+        await ctx.sessionPersistence.create(m)
+        await ctx.sessionPersistence.append(m.id, externalLog())
+
+        const suffix = await ctx.sessionPersistence.readFrom(m.id, 1)
+        expect(suffix.events).toEqual([externalLog()[1]])
       } finally {
         await fiber.dispose()
         await fix.cleanup()

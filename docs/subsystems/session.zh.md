@@ -26,6 +26,12 @@ interface UserMessage extends Message {
  */
 interface SessionEventMap {
   /**
+   * Declares one required repository-external log-only vocabulary before its
+   * first event. Persistence admits the declared names only while an exact
+   * matching producer registration is present.
+   */
+  'session/external-event-producer': ExternalSessionEventProducerDeclaration
+  /**
    * Opens turn `turn` before the loop claims queued input or runs pre-step.
    * Rejection, empty input, cancellation, or failure may close it with no
    * step; otherwise the following identified `user/message` event or batch

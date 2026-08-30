@@ -10,6 +10,14 @@ import SessionStore, {
   snapshotSessionEvent,
 } from '@deepseek-ai/dsh-session'
 import type { CreateSessionOptions, SessionEventType, SessionHeader, SessionSurface } from '@deepseek-ai/dsh-session'
+import type { ExternalSessionEventProducerHandle } from '@deepseek-ai/dsh-session'
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    'pactflow/project-initialized': { v: 1; name: string }
+    'pactflow/project-updated': { v: 1; name: string }
+  }
+}
 
 describe('Session', () => {
   it('exposes one stable readonly surface view', () => {
@@ -1079,6 +1087,135 @@ describe('Session', () => {
       expect(() => Session.create(SessionId(`bad-envelope-${index}`), [event as SessionEvent]))
         .toThrow(/invalid event envelope/)
     }
+  })
+})
+
+describe('External session event producers', () => {
+  const eventTypes = [
+    'pactflow/project-initialized',
+    'pactflow/project-updated',
+  ] as const
+
+  it('writes one durable declaration before producer-bound events', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const producer = ctx.sessions.externalEventProducers.register({
+      producer: '@nous/dsh-pactflow',
+      version: '0.1.0',
+      eventTypes,
+    })
+    const session = ctx.sessions.create(SessionId('external-events'))
+
+    producer.append(session, 'pactflow/project-initialized', { v: 1, name: 'first' })
+    producer.append(session, 'pactflow/project-updated', { v: 1, name: 'second' })
+
+    expect(session.events.map(event => event.type)).toEqual([
+      'session/external-event-producer',
+      'pactflow/project-initialized',
+      'pactflow/project-updated',
+    ])
+    expect(session.events[0]?.data).toEqual({
+      producer: '@nous/dsh-pactflow',
+      version: '0.1.0',
+      eventTypes: [...eventTypes],
+    })
+  })
+
+  it('prevalidates payloads and refuses conflicting session declarations', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const producer = ctx.sessions.externalEventProducers.register({
+      producer: '@nous/dsh-pactflow',
+      version: '0.1.0',
+      eventTypes,
+    })
+    const invalid = ctx.sessions.create(SessionId('invalid-external-event'))
+    expect(() => producer.append(
+      invalid,
+      'pactflow/project-initialized',
+      { v: 1, name: 1n } as unknown as { v: 1; name: string },
+    )).toThrow(/non-JSON-serializable/)
+    expect(invalid.events).toEqual([])
+
+    const conflicting = ctx.sessions.create(SessionId('conflicting-external-event'))
+    conflicting.append('session/external-event-producer', {
+      producer: '@nous/dsh-pactflow',
+      version: '0.2.0',
+      eventTypes: [...eventTypes],
+    })
+    expect(() => producer.append(
+      conflicting,
+      'pactflow/project-initialized',
+      { v: 1, name: 'blocked' },
+    )).toThrow(/conflicting declaration/)
+    expect(conflicting.events).toHaveLength(1)
+  })
+
+  it('validates registration ownership, canonical names, and read-only handles', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    ctx.sessions.externalEventProducers.register({
+      producer: '@nous/dsh-pactflow',
+      version: '0.1.0',
+      eventTypes,
+    })
+    expect(() => ctx.sessions.externalEventProducers.register({
+      producer: '@other/plugin',
+      version: '1.0.0',
+      eventTypes: ['pactflow/project-initialized'] as const,
+    })).toThrow(/already owned/)
+    expect(() => ctx.sessions.externalEventProducers.register({
+      producer: 'Invalid Package',
+      version: '1.0.0',
+      eventTypes: ['invalid/event'] as const,
+    })).toThrow(/canonical npm package name/)
+    expect(() => ctx.sessions.externalEventProducers.register({
+      producer: '@nous/unsorted',
+      version: '1.0.0',
+      eventTypes: ['z/event', 'a/event'] as const,
+    })).toThrow(/unique and sorted/)
+    expect(() => ctx.sessions.externalEventProducers.register({
+      producer: '@nous/core-collision',
+      version: '1.0.0',
+      eventTypes: ['turn/start'] as const,
+    })).toThrow(/collides with the first-party vocabulary/)
+
+    const readOnly = ctx.sessions.externalEventProducers.register({
+      producer: '@nous/historical',
+      version: '0.0.1',
+      eventTypes: ['historical/event'] as const,
+      mode: 'read-only',
+    })
+    expect(() => readOnly.append(
+      ctx.sessions.create(SessionId('historical')),
+      'historical/event' as never,
+      {} as never,
+    )).toThrow(/registered read-only/)
+  })
+
+  it('unregisters with the owning fiber and permanently disables its handle', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    let producer!: ExternalSessionEventProducerHandle<typeof eventTypes>
+    const owner = await ctx.plugin(Object.assign((inner: Context) => {
+      producer = inner.sessions.externalEventProducers.register({
+        producer: '@nous/dsh-pactflow',
+        version: '0.1.0',
+        eventTypes,
+      })
+    }, { inject: ['sessions'] }))
+    const session = ctx.sessions.create(SessionId('disposed-external-producer'))
+    producer.append(session, 'pactflow/project-initialized', { v: 1, name: 'before' })
+
+    await owner.dispose()
+
+    expect(() => producer.append(
+      session,
+      'pactflow/project-updated',
+      { v: 1, name: 'after' },
+    )).toThrow(/is disposed/)
+    expect(() => ctx.sessions.externalEventProducers.requireReadable(producer.declaration))
+      .toThrow(/is not registered/)
   })
 })
 
