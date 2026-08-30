@@ -1,4 +1,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { Context, symbols, type EffectMeta } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
@@ -248,18 +251,48 @@ describe('dsh-subagent-spawn-in-process', () => {
 
   it('inherits the parent cwd into the child session', async () => {
     const { ctx } = await setup([textResponse('x')])
+    const workspace = mkdtempSync(join(tmpdir(), 'dsh-subagent-parent-'))
     // A parent WITH a cwd (config agents have none, so create one explicitly).
     const parentHandle = await ctx.agents.create({
       sessionId: SessionId('cwd-parent-session'),
-      meta: { cwd: '/tmp/parent-workspace' },
+      meta: { cwd: workspace },
       agentOptions: { provider: 'mock', model: 'mock' },
     })
-    const run = await start(ctx, 'spawn', { prompt: [{ type: 'text', text: 'p' }], parent: parentHandle.agent })
-    await run.result
-    const child = ctx.agents.get(run.id)!
-    expect(child.session.header.cwd).toBe('/tmp/parent-workspace')
-    await run.dispose()
-    await parentHandle.dispose()
+    try {
+      const run = await start(ctx, 'spawn', { prompt: [{ type: 'text', text: 'p' }], parent: parentHandle.agent })
+      await run.result
+      const child = ctx.agents.get(run.id)!
+      expect(child.session.header.cwd).toBe(workspace)
+      await run.dispose()
+    } finally {
+      await parentHandle.dispose()
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('persists an explicit per-run cwd instead of the parent workspace', async () => {
+    const { ctx } = await setup([textResponse('x')])
+    const parentWorkspace = mkdtempSync(join(tmpdir(), 'dsh-subagent-parent-'))
+    const childWorkspace = mkdtempSync(join(tmpdir(), 'dsh-subagent-child-'))
+    const parentHandle = await ctx.agents.create({
+      sessionId: SessionId('cwd-override-parent-session'),
+      meta: { cwd: parentWorkspace },
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    try {
+      const run = await start(ctx, 'spawn', {
+        prompt: [{ type: 'text', text: 'p' }],
+        parent: parentHandle.agent,
+        cwd: childWorkspace,
+      })
+      await run.result
+      expect(ctx.agents.get(run.id)?.session.header.cwd).toBe(childWorkspace)
+      await run.dispose()
+    } finally {
+      await parentHandle.dispose()
+      rmSync(parentWorkspace, { recursive: true, force: true })
+      rmSync(childWorkspace, { recursive: true, force: true })
+    }
   })
 
   it('uses request.agentOptions.model when the parent has no model of its own', async () => {
@@ -291,6 +324,7 @@ describe('dsh-subagent-spawn-in-process', () => {
       depthLimit: true,
       toolFilter: true,
       persona: true,
+      cwd: true,
     })
   })
 

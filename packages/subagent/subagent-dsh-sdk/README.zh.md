@@ -31,7 +31,7 @@ kind: "package-reference"
 
 当子进程必须是完整的 harness 对等体——拥有自己的组合、会话持久化、模型路由与工具——而不是共享父进程的 agent 时，选择此后端。当子进程必须共享父级组合或遵守父级强制的非路由能力时，请选择进程内后端：本提供方接受 agent 路由选项，但会拒绝结构化输出、深度上限、工具过滤或 persona，而不是静默省略。
 
-提供方声明 `agentOptions: true`，同时保持 `outputSchema`/`depthLimit`/`toolFilter`/`persona` 为 false，并且 `inheritsParentContext: false`。不可变的 `agentRouteDefaults` 会在模型覆盖与确切路由预检前，把配置的 provider／model 基线公开给 `dsh-tool-subagent`；`start()` 则为直接调用方与 `maxTokens` 独立应用同一份配置默认值。Agent 路由值通过显式白名单跨越 SDK 协议；子进程仍是另一进程里的全新运行时，唯一从父 agent 本身派生的值是工作区 cwd。基于本提供方的 `dsh-tool-subagent` 部署应设置 `maxDepth: 'provider-managed'`——子 harness 拥有自己的递归预算。
+提供方声明 `agentOptions: true` 与 `cwd: true`，同时保持 `outputSchema`/`depthLimit`/`toolFilter`/`persona` 为 false，并且 `inheritsParentContext: false`。不可变的 `agentRouteDefaults` 会在模型覆盖与确切路由预检前，把配置的 provider／model 基线公开给 `dsh-tool-subagent`；`start()` 则为直接调用方与 `maxTokens` 独立应用同一份配置默认值。Agent 路由值通过显式白名单跨越 SDK 协议；子进程仍是另一进程里的全新运行时。基于本提供方的 `dsh-tool-subagent` 部署应设置 `maxDepth: 'provider-managed'`——子 harness 拥有自己的递归预算。
 
 ### 配置
 
@@ -42,7 +42,7 @@ kind: "package-reference"
 | `profile` | `sdk` | 子进程命名的 profile |
 | `patches` | `[]` | 每次启动的有序 profile patch 文件，在插件加载时解析并校验 |
 | `dshHome` | 必填 | 每个嵌套子进程的绝对隔离 Harness home |
-| `cwd` | 父会话 cwd | 子进程及其 SDK 会话的工作目录覆盖值 |
+| `cwd` | 请求 cwd，否则为父会话 cwd | 子进程及其 SDK 会话的 Provider 级工作目录限制 |
 | `provider` | `deepseek-official` | 写入子进程 `initialize` 的提供方路由 |
 | `model` | `deepseek-v4-flash` | 写入子进程 `initialize` 的模型 |
 | `maxTokens` | 适配器／提供方路由默认值 | 写入子进程 `initialize` 的单次请求输出 token 上限 |
@@ -104,7 +104,7 @@ kind: "package-reference"
 
 ### 运行流程
 
-一次启动会在 spawn 前解析子进程工作目录与一条进程级 SDK 路由。`request.agentOptions` 中每个已声明字段（`provider`、`model`、`reasoningEffort` 或 `maxTokens`）都会覆盖对应的提供方实例默认值；省略时保留已配置的提供方／模型与可选上限，而推理强度只有在请求提供时才会出现。随后，提供方通过 SDK 客户端 spawn 运行时，并在履行前完成 `initialize` 握手，其中包括确切模型与推理强度校验。路由、spawn、握手或发布前取消失败时，只会在子进程被回收后拒绝；工作目录解析失败则会在尚未 spawn 任何内容时拒绝。发布后，提供方拥有一段 SDK 活动，并从子会话事件中读取答案：最后一条完整且非空的 `assistant/message`（记录 usage 的空内容消息会被跳过）；若没有这类消息，则取累积的 `text-delta` 流。dispose（资源释放）是幂等的：先在本地把结果确定为 `aborted`，发出有界的协议 `shutdown` 请求，再经 stdin EOF → SIGTERM → SIGKILL 升级到实际退出。
+一次启动会在 spawn 前解析子进程工作目录与一条进程级 SDK 路由。Provider `cwd` 固定部署目录；否则受信的单次运行 `request.cwd` 会覆盖父 Session 目录，请求与已配置 `cwd` 冲突时会在 spawn 前失败。`request.agentOptions` 中每个已声明字段（`provider`、`model`、`reasoningEffort` 或 `maxTokens`）都会覆盖对应的提供方实例默认值；省略时保留已配置的提供方／模型与可选上限，而推理强度只有在请求提供时才会出现。随后，提供方通过 SDK 客户端 spawn 运行时，并在履行前完成 `initialize` 握手，其中包括确切模型与推理强度校验。路由、spawn、握手或发布前取消失败时，只会在子进程被回收后拒绝；工作目录解析失败则会在尚未 spawn 任何内容时拒绝。发布后，提供方拥有一段 SDK 活动，并从子会话事件中读取答案：最后一条完整且非空的 `assistant/message`（记录 usage 的空内容消息会被跳过）；若没有这类消息，则取累积的 `text-delta` 流。dispose（资源释放）是幂等的：先在本地把结果确定为 `aborted`，发出有界的协议 `shutdown` 请求，再经 stdin EOF → SIGTERM → SIGKILL 升级到实际退出。
 
 ### 停止原因映射
 
@@ -170,7 +170,7 @@ kind: "package-reference"
 这些限制说明本后端何时不合适，或何时需要特别的运维注意。它们是当前包约束，不是通用 SDK 对比或任务积压。
 
 - **每次运行都使用全新的运行时进程**——不使用进程池；harness 运行时需要启动完整的插件树，因此每次运行的 spawn 成本高于 ACP 后端通常使用的子进程。
-- **不支持路由之外的启动时能力**——父级可以选择子 agent 路由，但无法在子进程内强制执行 `outputSchema`、深度限制、工具过滤或 persona；应改为配置所选子 profile 及其有序 patch。
+- **只支持路由与工作区启动时能力**——受信 Host 可以选择子 agent 路由与绝对本地工作区，但无法在子进程内强制执行 `outputSchema`、深度限制、工具过滤或 persona；应改为配置所选子 profile 及其有序 patch。
 - **子进程的 transcript（文本记录）保留在其自身的会话根目录中**——父级日志只记录委派工具调用与结果；流式会话事件通道只用于提取输出，不会桥接到父级日志中。
 - **仅支持本地子进程**——解析出的工作目录是本地路径；远程运行时需要独立的后端。
 

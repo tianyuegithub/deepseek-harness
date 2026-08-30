@@ -61,7 +61,7 @@ export const Config: z<Config> = z.object({
 type ResolvedConfig = Omit<Required<Config>, 'model'> & Pick<Config, 'model'>
 
 class CodexProvider implements SubagentProvider {
-  readonly capabilities: SubagentCapabilities = NO_START_CAPABILITIES
+  readonly capabilities: SubagentCapabilities = { ...NO_START_CAPABILITIES, cwd: true }
   readonly inheritsParentContext = false
 
   constructor(
@@ -71,8 +71,7 @@ class CodexProvider implements SubagentProvider {
   ) {}
 
   start(request: ResolvedSubagentStartRequest) {
-    const parentCwd = request.parent.session.header.cwd
-    if (parentCwd === undefined) {
+    if (request.cwd === undefined && request.parent.session.header.cwd === undefined) {
       throw new Error(
         'subagent-codex: no working directory for the child — delegate from a parent session that has one',
       )
@@ -82,7 +81,8 @@ class CodexProvider implements SubagentProvider {
       cwd = resolveChildCwd(
         'subagent-codex',
         undefined,
-        parentCwd,
+        request.cwd,
+        request.parent.session.header.cwd,
       )
     } catch (error: unknown) {
       if (request.signal.aborted) {

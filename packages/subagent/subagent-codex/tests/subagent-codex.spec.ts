@@ -601,11 +601,19 @@ describe('task admission and package contracts', () => {
     vi.spyOn(ctx.subprocess, 'spawn').mockReturnValue(child.handle)
     codex.apply(ctx, { env: {}, disposeGraceMs: 3_000 })
     expect(ctx.subagents.getProvider('codex')).toBeDefined()
-    const starting = ctx.subagents.start('codex', request())
+    const starting = ctx.subagents.start('codex', {
+      ...request(),
+      cwd: process.cwd(),
+      parent: {
+        id: 'parent-other-workspace',
+        session: { header: { cwd: dirname(process.cwd()) } },
+      } as unknown as Agent,
+    })
     const initialize = await child.peer.nextMethod('initialize')
     child.peer.respond(initialize, { userAgent: 'codex-cli 0.149.1' })
     await child.peer.nextMethod('initialized')
     const threadStart = await child.peer.nextMethod('thread/start')
+    expect((threadStart.params as { cwd?: unknown }).cwd).toBe(process.cwd())
     expect(threadStart.params).not.toHaveProperty('model')
     child.peer.respond(threadStart, { thread: { id: 'thread-1', ephemeral: true } })
     const run = await starting

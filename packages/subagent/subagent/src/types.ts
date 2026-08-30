@@ -89,6 +89,8 @@ export interface SubagentCapabilities {
   readonly depthLimit: boolean
   readonly toolFilter: boolean
   readonly persona: boolean
+  /** Provider can select an absolute workspace for one start. */
+  readonly cwd: boolean
 }
 
 /**
@@ -117,6 +119,13 @@ export interface SubagentStartRequest {
    * remaining turn work when it fires afterward.
    */
   readonly signal: AbortSignal
+  /**
+   * Optional absolute workspace for this run. Requires
+   * {@link SubagentCapabilities.cwd}; provider configuration may pin a
+   * different directory and reject the request. Trusted Host consumers use
+   * this field directly; the model-facing Subagent tool does not expose it.
+   */
+  readonly cwd?: string
   /**
    * Optional host-Agent provider, model, reasoning-effort, and output-token
    * overrides. Requires {@link SubagentCapabilities.agentOptions}; in-process

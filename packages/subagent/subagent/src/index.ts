@@ -79,6 +79,7 @@ import { snapshotSubagentDescriptor } from './descriptor.ts'
 import { subagentIdentityProjectionDefinition, subagentTimingProjectionDefinition } from './projection.ts'
 
 export * from './out-of-process.ts'
+export * from './workspace.ts'
 export { AssistantOutputFold, finalAssistantOutput } from './assistant-output.ts'
 export { SubagentRunId } from './types.ts'
 export type {
@@ -623,6 +624,7 @@ export class SubagentRuntime extends TypertRemoteService {
       { when: request.maxDepth !== undefined, cap: 'depthLimit' },
       { when: request.toolFilter !== undefined, cap: 'toolFilter' },
       { when: request.persona !== undefined, cap: 'persona' },
+      { when: request.cwd !== undefined, cap: 'cwd' },
     ]
     for (const { when, cap } of needs) {
       if (when && !provider.capabilities[cap]) {

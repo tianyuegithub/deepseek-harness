@@ -27,6 +27,7 @@ describe('NO_START_CAPABILITIES', () => {
       depthLimit: false,
       toolFilter: false,
       persona: false,
+      cwd: false,
     })
     expect(Object.isFrozen(NO_START_CAPABILITIES)).toBe(true)
   })
@@ -88,11 +89,23 @@ describe('child cwd resolution', () => {
     }
   })
 
-  it('resolveChildCwd: override wins, else the parent session cwd validates, else loud failure', () => {
-    expect(resolveChildCwd('p', tmpdir(), undefined)).toBe(tmpdir())
-    expect(resolveChildCwd('p', undefined, tmpdir())).toBe(tmpdir())
-    expect(() => resolveChildCwd('p', undefined, undefined)).toThrow('no working directory for the child')
-    expect(() => resolveChildCwd('p', undefined, 'relative/parent')).toThrow('parent session cwd must be an absolute path')
+  it('resolveChildCwd: request overrides parent but cannot bypass configured cwd', () => {
+    const requested = mkdtempSync(join(tmpdir(), 'oop-request-'))
+    try {
+      expect(resolveChildCwd('p', undefined, requested, tmpdir())).toBe(requested)
+      expect(resolveChildCwd('p', tmpdir(), tmpdir(), requested)).toBe(tmpdir())
+      expect(() => resolveChildCwd('p', tmpdir(), requested, tmpdir()))
+        .toThrow('request cwd conflicts with the configured cwd')
+    } finally {
+      rmSync(requested, { recursive: true, force: true })
+    }
+  })
+
+  it('resolveChildCwd: parent fallback validates and absence fails loud', () => {
+    expect(resolveChildCwd('p', undefined, undefined, tmpdir())).toBe(tmpdir())
+    expect(() => resolveChildCwd('p', undefined, undefined, undefined)).toThrow('no working directory for the child')
+    expect(() => resolveChildCwd('p', undefined, undefined, 'relative/parent'))
+      .toThrow('parent session cwd must be an absolute path')
   })
 })
 

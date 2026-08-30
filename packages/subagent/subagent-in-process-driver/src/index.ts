@@ -24,6 +24,7 @@ import {
   captureDelegatedPolicyOverrides,
   childSessionMeta,
   finalAssistantOutput,
+  assertUsableCwd,
   resolveChildAgentOptions,
   resolveChildDepth,
 } from '@deepseek-ai/dsh-subagent'
@@ -107,6 +108,9 @@ export async function startInProcessRun(
   if (request.signal.aborted) throw prePublicationAbort()
   const parent = request.parent
   const childDepth = resolveChildDepth(parent, request.maxDepth)
+  const cwd = request.cwd === undefined
+    ? parent.session.header.cwd
+    : assertUsableCwd('subagent-in-process', 'request cwd', request.cwd)
 
   const childId = SessionId(randomUUID())
   const seed = options.seed
@@ -131,7 +135,7 @@ export async function startInProcessRun(
 
   const handle = await parent.ctx.agents.create({
     sessionId: childId,
-    meta: childSessionMeta(parent, childDepth, activationBoundary),
+    meta: childSessionMeta(parent, childDepth, activationBoundary, cwd),
     ...seed !== undefined ? { seed } : {},
     agentOptions: resolveChildAgentOptions(parent, request.agentOptions, childDepth),
     signal: request.signal,

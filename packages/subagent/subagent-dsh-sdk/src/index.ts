@@ -110,6 +110,7 @@ function resolveConfiguredFile(field: string, value: string): string {
 const SDK_START_CAPABILITIES: SubagentCapabilities = Object.freeze({
   ...NO_START_CAPABILITIES,
   agentOptions: true,
+  cwd: true,
 })
 
 /** Merge the request's supported route fields over this provider instance's defaults. */
@@ -147,7 +148,7 @@ class SdkSubagentProvider implements SubagentProvider {
     }
     let cwd: string
     try {
-      cwd = resolveChildCwd('subagent-dsh-sdk', this.config.cwd, request.parent.session.header.cwd)
+      cwd = resolveChildCwd('subagent-dsh-sdk', this.config.cwd, request.cwd, request.parent.session.header.cwd)
     } catch (error: unknown) {
       const failure = sdkConfigurationFailure(error)
       this.ctx.logger.warn(`subagent-dsh-sdk "${this.name}": child start failed: %o`, error)

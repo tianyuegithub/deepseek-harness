@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -323,6 +323,27 @@ describe('cwd resolution', () => {
     }
   })
 
+  it('uses the per-run cwd for the child process and ACP session', async () => {
+    const requested = realpathSync(mkdtempSync(join(tmpdir(), 'acp-request-cwd-')))
+    const parentDir = realpathSync(mkdtempSync(join(tmpdir(), 'acp-parent-cwd-')))
+    try {
+      const ctx = await setup({ MOCK_ECHO_CWD: '1' })
+      const parent = { id: 'parent', session: { header: { cwd: parentDir } } } as unknown as Agent
+      const run = await ctx.subagents.start('acp', {
+        prompt: [{ type: 'text' as const, text: 'p' }],
+        parent,
+        signal: new AbortController().signal,
+        cwd: requested,
+      })
+      const result = await run.result
+      await run.dispose()
+      expect(text(result.output)).toBe(`${requested}\n${requested}`)
+    } finally {
+      rmSync(requested, { recursive: true, force: true })
+      rmSync(parentDir, { recursive: true, force: true })
+    }
+  })
+
   it('rejects before spawning when neither config.cwd nor the parent session provides one', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'acp-no-cwd-'))
     const sentinel = join(tmp, 'spawned')
@@ -365,6 +386,27 @@ describe('cwd resolution', () => {
     } finally {
       rmSync(configured, { recursive: true, force: true })
       rmSync(parentDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a per-run cwd that conflicts with configured cwd before spawning', async () => {
+    const configured = realpathSync(mkdtempSync(join(tmpdir(), 'acp-cfg-cwd-')))
+    const requested = realpathSync(mkdtempSync(join(tmpdir(), 'acp-request-cwd-')))
+    try {
+      const ctx = new Context()
+      await ctx.plugin(SubagentRuntime)
+      await ctx.plugin(LocalSubprocessRuntime)
+      const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+      await ctx.plugin(acp, {
+        providerName: 'acp', command: process.execPath, args: [mockServer], cwd: configured,
+        permission: 'reject', env: {},
+      })
+      await expect(ctx.subagents.start('acp', { ...request(), cwd: requested }))
+        .rejects.toThrow(expectedFailure('stage: initialize; category: configuration'))
+      expect(spawn).not.toHaveBeenCalled()
+    } finally {
+      rmSync(configured, { recursive: true, force: true })
+      rmSync(requested, { recursive: true, force: true })
     }
   })
 
@@ -1401,6 +1443,7 @@ describe('dsh-subagent-acp', () => {
       depthLimit: false,
       toolFilter: false,
       persona: false,
+      cwd: true,
     })
   })
 

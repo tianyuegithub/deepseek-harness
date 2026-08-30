@@ -814,6 +814,7 @@ describe('dsh-subagent-dsh-sdk provider', () => {
       depthLimit: false,
       toolFilter: false,
       persona: false,
+      cwd: true,
     })
     await fiber.dispose()
     expect(ctx.subagents.getProvider('sdk-hmr')).toBeUndefined()
@@ -934,6 +935,35 @@ describe('dsh-subagent-dsh-sdk provider', () => {
       await ctx.fiber.dispose()
     } finally {
       rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('uses a per-run cwd instead of the parent session cwd', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'subagent-dsh-sdk-request-cwd-'))
+    try {
+      const ctx = await setup({ FAKE_ECHO_CWD: '1', FAKE_TEXT: 'done' })
+      const run = await ctx.subagents.start('dsh-sdk', { ...request(), cwd: tmp })
+      const result = await run.result
+      const { realpathSync } = await import('node:fs')
+      expect(text(result.output)).toContain(`cwd=${realpathSync(tmp)}`)
+      await run.dispose()
+      await ctx.fiber.dispose()
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a per-run cwd that conflicts with configured cwd', async () => {
+    const configured = mkdtempSync(join(tmpdir(), 'subagent-dsh-sdk-config-cwd-'))
+    const requested = mkdtempSync(join(tmpdir(), 'subagent-dsh-sdk-request-cwd-'))
+    try {
+      const ctx = await setup({}, { cwd: configured })
+      await expect(ctx.subagents.start('dsh-sdk', { ...request(), cwd: requested }))
+        .rejects.toThrow(expectedFailure('stage: initialize; category: configuration'))
+      await ctx.fiber.dispose()
+    } finally {
+      rmSync(configured, { recursive: true, force: true })
+      rmSync(requested, { recursive: true, force: true })
     }
   })
 

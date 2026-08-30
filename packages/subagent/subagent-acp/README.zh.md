@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-`dsh-subagent-acp` 在全新的子进程中运行每个被委派的子 agent，并作为 Agent Client Protocol 客户端驱动它：子 agent（智能体）拥有自己的运行时、会话、模型配置和工具，可以是任何兼容 ACP 的 agent，而不只是 Harness。它是进程内 spawn 与 fork 后端的进程外替代方案，只与子 agent 共享父会话的工作目录。每次运行都会 spawn 全新进程、初始化 ACP 会话、发送任务并收集流式最终答案；权限提示由配置自动应答，因此无需人工参与。父级只收到子 agent 的最终答案或安全错误——中间消息与工具流量不会跨越边界。当子 agent 必须与父 harness 完全隔离且能说 ACP 时，选择它。
+`dsh-subagent-acp` 在全新的子进程中运行每个被委派的子 agent，并作为 Agent Client Protocol 客户端驱动它：子 agent（智能体）拥有自己的运行时、会话、模型配置和工具，可以是任何兼容 ACP 的 agent，而不只是 Harness。它是进程内 spawn 与 fork 后端的进程外替代方案，只与子 agent 共享解析后的本地工作目录。每次运行都会 spawn 全新进程、初始化 ACP 会话、发送任务并收集流式最终答案；权限提示由配置自动应答，因此无需人工参与。父级只收到子 agent 的最终答案或安全错误——中间消息与工具流量不会跨越边界。当子 agent 必须与父 harness 完全隔离且能说 ACP 时，选择它。
 
 ## 目录
 
@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 何时选择
 
-当子 agent 必须在独立进程中运行、拥有自己的运行时、模型和工具时选择此后端——例如来自其他项目的 ACP agent——或者你希望委派完全无法触及父 harness 时。当子 agent 必须共享父级组合或遵守父级强制的能力时，请选择进程内后端：本提供方不声明任何可选启动时能力，因此 seam 会拒绝要求 `agentOptions`、结构化输出、深度上限、工具过滤或 persona 的请求，而不是静默省略。
+当子 agent 必须在独立进程中运行、拥有自己的运行时、模型和工具时选择此后端——例如来自其他项目的 ACP agent——或者你希望委派完全无法触及父 harness 时。当子 agent 必须共享父级组合或遵守父级强制的能力时，请选择进程内后端：除绝对的单次运行 `cwd` 外，本提供方会拒绝要求 `agentOptions`、结构化输出、深度上限、工具过滤或 persona 的请求，而不是静默省略。
 
 ### 配置
 
@@ -38,7 +38,7 @@ kind: "package-reference"
 | `providerName` | `acp` | `ctx.subagents` 上的注册表名称 |
 | `command` | 必填 | 每次运行时 spawn 的可执行文件（子 ACP agent） |
 | `args` | `[]` | 命令参数 |
-| `cwd` | 父会话 cwd | 子进程及其 ACP 会话的工作目录覆盖值 |
+| `cwd` | 请求 cwd，否则为父会话 cwd | 子进程及其 ACP 会话的 Provider 级工作目录限制 |
 | `permission` | `reject` | 自动应答权限请求：拒绝，或选择第一个 `allow_once` 或 `allow_always` 选项（`allow`） |
 | `env` | `{}` | 叠加在已清理凭据的父环境之上的显式子环境 |
 | `disposeEofGraceMs` | `6000` | stdin EOF 之后、平台终止之前的宽限 |
@@ -91,7 +91,7 @@ spawn、初始化或新建会话失败会在发布前拒绝，通常先等待子
 
 ### 启动与所有权流程
 
-一次启动先解析子 agent 的工作目录（配置的 `cwd` 覆盖值，否则取父会话 cwd），经子进程 seam spawn 命令，完成 ACP `initialize` 与 `newSession` 握手，然后才发布运行。兑现意味着远程会话已就绪、所有权已转移给调用方。dispose（资源释放）是幂等的：先关闭 stdin 并按配置的宽限等待协作式完全停稳，再经 SIGTERM 升级到 SIGKILL，并等待整棵进程树退出。清理失败会作为有序的安全事实保持可观察，且绝不声称已经完全停稳。
+一次启动按 Provider 配置、受信单次运行请求、父 Session 的顺序解析子 agent 工作目录。请求目录与已配置 `cwd` 不同时会在 spawn 前失败，而不是绕过部署限制。随后经子进程 seam spawn 命令，完成 ACP `initialize` 与 `newSession` 握手，然后才发布运行。兑现意味着远程会话已就绪、所有权已转移给调用方。dispose（资源释放）是幂等的：先关闭 stdin 并按配置的宽限等待协作式完全停稳，再经 SIGTERM 升级到 SIGKILL，并等待整棵进程树退出。清理失败会作为有序的安全事实保持可观察，且绝不声称已经完全停稳。
 
 ### 停止原因映射
 
@@ -125,7 +125,7 @@ spawn、初始化或新建会话失败会在发布前拒绝，通常先等待子
 
 #### 模型看到什么
 
-远程子 agent 通过 ACP 接收独立任务内容，并使用其自身进程配置的系统提示词、工具和全新会话。它不接收父级对话。本提供方不声明可选启动时能力，因此本地服务会拒绝要求 `agentOptions`、persona、工具过滤、深度强制或结构化输出的请求，而不是静默省略。
+远程子 agent 通过 ACP 接收独立任务内容，并使用其自身进程配置的系统提示词、工具和全新会话。它不接收父级对话。Provider 接受受信的绝对单次运行 `cwd`；它会拒绝 `agentOptions`、persona、工具过滤、深度强制与结构化输出，而不是静默省略。
 
 #### Token 影响
 
@@ -158,7 +158,7 @@ spawn、初始化或新建会话失败会在发布前拒绝，通常先等待子
 
 - **每次运行使用全新进程**——没有进程池；每次委派都要付出完整的 spawn 与 ACP 握手成本。
 - **仅支持本地工作区**——解析后的工作目录是交给同一台机器上子进程的本地路径；远程工作区映射尚未设计。
-- **不支持可选启动时能力**——本提供方无法在远程进程内应用 `agentOptions`、`outputSchema`、深度上限、工具过滤器或 persona，因此 seam 会拒绝需要它们的请求。
+- **不支持工作区以外的启动时能力**——本提供方可以选择绝对的单次运行工作区，但无法在远程进程内应用 `agentOptions`、`outputSchema`、深度上限、工具过滤器或 persona，因此 seam 会拒绝需要它们的请求。
 - **只收集已提交的 `agent_message_chunk` 文本**——自动化服务器把推理（reasoning）、工具活动、计划和其他 trace 数据保留在子 agent 会话日志中，不通过 ACP 发出。
 - **权限提示自动应答**（`permission: allow | reject`）——不会把子 agent 的 `session/request_permission` 呈现给人。
 
