@@ -1840,6 +1840,7 @@ class FaceAnalyzer {
     if (declaration === undefined) return false
     const registration = this.registrationForFile(declaration.getSourceFile().fileName)
     if (registration?.name === '@deepseek-ai/dsh-typert-protocol') return true
+    if (nearestPackageName(declaration.getSourceFile().fileName) === '@deepseek-ai/dsh-typert-protocol') return true
     for (let current: ts.Node | undefined = declaration; current !== undefined; current = optionalParent(current)) {
       if (ts.isModuleDeclaration(current)
         && ts.isStringLiteral(current.name)
@@ -2547,6 +2548,25 @@ class FaceAnalyzer {
     throw new TypertAnalysisError(
       `typert(${this.face}): ${location.file}:${String(location.line)}:${String(location.column)}: ${message}`,
     )
+  }
+}
+
+/** Resolve the nearest package identity for a declaration imported from node_modules. */
+function nearestPackageName(file: string): string | undefined {
+  let directory = dirname(realPath(file))
+  for (;;) {
+    const manifestPath = join(directory, 'package.json')
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { readonly name?: unknown }
+        return typeof manifest.name === 'string' ? manifest.name : undefined
+      } catch {
+        return undefined
+      }
+    }
+    const parent = dirname(directory)
+    if (parent === directory) return undefined
+    directory = parent
   }
 }
 

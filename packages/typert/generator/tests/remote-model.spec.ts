@@ -48,6 +48,33 @@ afterEach(() => {
 })
 
 describe('Remote model generation', { timeout: 60_000 }, () => {
+  it('recognizes Typert protocol metatypes from an installed external package', () => {
+    const root = copyFixture()
+    const ambientPath = join(root, 'typert-protocol.d.ts')
+    const ambient = readFileSync(ambientPath, 'utf8')
+    const externalDeclaration = ambient
+      .replace("declare module '@deepseek-ai/dsh-typert-protocol' {\n", '')
+      .replace(/\n\}\s*$/u, '\n')
+    const protocolRoot = join(root, 'node_modules/@deepseek-ai/dsh-typert-protocol')
+    mkdirSync(protocolRoot, { recursive: true })
+    writeFileSync(join(protocolRoot, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-typert-protocol',
+      version: '0.0.0-test',
+      type: 'module',
+      types: './index.d.ts',
+      exports: { '.': { types: './index.d.ts' } },
+    }))
+    writeFileSync(join(protocolRoot, 'index.d.ts'), externalDeclaration)
+    rmSync(ambientPath)
+    editFile(root, 'tsconfig.base.json', source => source.replace(
+      '      "@deepseek-ai/dsh-typert-protocol": ["./typert-protocol.d.ts"],\n',
+      '',
+    ))
+
+    const [artifact] = new WorkspaceTypertGenerator(root).generate()
+    expect(artifact?.remote?.dts).toContain("'goals/create':")
+  })
+
   it('discovers a Remote-only package and emits strict direct and Context descriptors', async () => {
     const generator = new WorkspaceTypertGenerator(fixtureRoot)
 

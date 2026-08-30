@@ -83,6 +83,8 @@ An endpoint selects exactly one invocation mode. A flow that needs an explicit `
 
 Business packages depend only on the lightweight `@deepseek-ai/dsh-typert-protocol`. It provides `TypertRemoteService` and declaration protocols for decorators, the binding fallback, lookup, Remote Scope, and descriptors, without depending on the TypeScript compiler, Zod, HTTP, or the Client runtime.
 
+The generator recognizes those protocol metatypes both from this repository's registered declaration and from an installed package whose nearest `package.json` has the exact `@deepseek-ai/dsh-typert-protocol` identity. External business packages therefore generate the same Remote model without a workspace path alias or an ambient module wrapper.
+
 A method that cooperatively supports cancellation declares `signal: AbortSignal` as its final Host parameter. This reserved parameter is not a business value, lookup, or JSON field. The generated consumer method exposes it as a final optional parameter so ordinary calls remain unchanged while callers that own cancellation can pass a signal.
 
 ## Decorators and the explicit Gateway facet

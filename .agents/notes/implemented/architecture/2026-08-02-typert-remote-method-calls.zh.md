@@ -83,6 +83,8 @@ export class ScopedGoalService extends TypertRemoteService {
 
 业务包只依赖轻量的 `@deepseek-ai/dsh-typert-protocol`。它提供 `TypertRemoteService`，以及 decorator、binding 回退、lookup、Remote Scope 和 descriptor 的声明协议，不依赖 TypeScript compiler、Zod、HTTP 或 Client runtime。
 
+生成器既能从本仓库已注册的声明识别这些协议元类型，也能从最近 `package.json` 的精确身份为 `@deepseek-ai/dsh-typert-protocol` 的已安装 Package 识别它们。因此，外部业务 Package 无需 workspace path alias 或 ambient module wrapper，即可生成相同的 Remote model。
+
 支持协作式取消的方法会把 `signal: AbortSignal` 声明为最后一个 Host 参数。这个保留参数不是业务值、lookup 或 JSON 字段。生成的消费方方法将其暴露为最后一个可选参数，因此普通调用保持不变，而拥有取消控制权的调用方可以传入 signal。
 
 ## Decorator 与显式 Gateway facet
