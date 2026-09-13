@@ -1502,6 +1502,118 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
       }
     })
 
+    it('cold-reads an upgraded log segment-wise and refuses missing historical registrations', async () => {
+      const fix = await makeFixture()
+      const { ctx, fiber } = await freshCtx(fix)
+      const upgradedLog: SessionEvent[] = [
+        { type: 'session/external-event-producer', seq: 0, time: 1,
+          data: { producer: EXTERNAL_PRODUCER, version: '1.0.0', eventTypes: [EXTERNAL_EVENT] } },
+        { type: EXTERNAL_EVENT, seq: 1, time: 2, data: { v: 1, value: 'first' } },
+        { type: 'session/external-event-producer', seq: 2, time: 3,
+          data: { producer: EXTERNAL_PRODUCER, version: '2.0.0', eventTypes: [EXTERNAL_EVENT, 'external-test/second'] } },
+        { type: 'external-test/second', seq: 3, time: 4, data: { v: 1, value: 'second' } },
+      ] as unknown as SessionEvent[]
+      try {
+        const historical = ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: '1.0.0',
+          eventTypes: [EXTERNAL_EVENT] as const,
+          mode: 'read-only',
+        })
+        ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: '2.0.0',
+          eventTypes: [EXTERNAL_EVENT, 'external-test/second'] as const,
+        })
+        const m = meta('external-upgraded', WORK)
+        await ctx.sessionPersistence.create(m)
+        await ctx.sessionPersistence.append(m.id, upgradedLog)
+
+        await expect(ctx.sessionPersistence.load(m.id)).resolves.toMatchObject({
+          events: [
+            { type: 'session/external-event-producer', data: { version: '1.0.0' } },
+            { type: EXTERNAL_EVENT, data: { v: 1, value: 'first' } },
+            { type: 'session/external-event-producer', data: { version: '2.0.0' } },
+            { type: 'external-test/second', data: { v: 1, value: 'second' } },
+          ],
+        })
+
+        historical.dispose()
+        const missingFailure = await ctx.sessionPersistence.load(m.id)
+          .then(() => undefined, (error: unknown) => error as Error)
+        expect(missingFailure?.name).toBe('SessionFormatUnsupportedError')
+        expect(missingFailure?.message).toMatch(/required external session event producer.*version "1\.0\.0" is not registered/)
+      } finally {
+        await fiber.dispose()
+        await fix.cleanup()
+      }
+    })
+
+    it('rejects non-monotonic, shrinking, and unorderable declaration sequences', async () => {
+      const fix = await makeFixture()
+      const { ctx, fiber } = await freshCtx(fix)
+      const declaration = (version: string, eventTypes: readonly string[], seq: number): SessionEvent => ({
+        type: 'session/external-event-producer', seq, time: 1,
+        data: { producer: EXTERNAL_PRODUCER, version, eventTypes: [...eventTypes] },
+      } as unknown as SessionEvent)
+      try {
+        ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: '1.0.0',
+          eventTypes: [EXTERNAL_EVENT] as const,
+          mode: 'read-only',
+        })
+        ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: '2.0.0',
+          eventTypes: [EXTERNAL_EVENT, 'external-test/second'] as const,
+          mode: 'read-only',
+        })
+        ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: '3.0.0',
+          eventTypes: [EXTERNAL_EVENT] as const,
+          mode: 'read-only',
+        })
+        ctx.sessions.externalEventProducers.register({
+          producer: EXTERNAL_PRODUCER,
+          version: 'not.a.semver',
+          eventTypes: [EXTERNAL_EVENT] as const,
+          mode: 'read-only',
+        })
+
+        const downgrade = meta('external-downgrade', WORK)
+        await ctx.sessionPersistence.create(downgrade)
+        await ctx.sessionPersistence.append(downgrade.id, [
+          declaration('2.0.0', [EXTERNAL_EVENT, 'external-test/second'], 0),
+          declaration('1.0.0', [EXTERNAL_EVENT], 1),
+        ])
+        await expect(ctx.sessionPersistence.load(downgrade.id))
+          .rejects.toThrow(/does not upgrade the earlier declaration/)
+
+        const shrink = meta('external-shrink', WORK)
+        await ctx.sessionPersistence.create(shrink)
+        await ctx.sessionPersistence.append(shrink.id, [
+          declaration('2.0.0', [EXTERNAL_EVENT, 'external-test/second'], 0),
+          declaration('3.0.0', [EXTERNAL_EVENT], 1),
+        ])
+        await expect(ctx.sessionPersistence.load(shrink.id))
+          .rejects.toThrow(/drops previously declared event types/)
+
+        const unorderable = meta('external-unorderable', WORK)
+        await ctx.sessionPersistence.create(unorderable)
+        await ctx.sessionPersistence.append(unorderable.id, [
+          declaration('1.0.0', [EXTERNAL_EVENT], 0),
+          declaration('not.a.semver', [EXTERNAL_EVENT], 1),
+        ])
+        await expect(ctx.sessionPersistence.load(unorderable.id))
+          .rejects.toThrow(/unorderable/)
+      } finally {
+        await fiber.dispose()
+        await fix.cleanup()
+      }
+    })
+
     it('round-trips a header with parentSession (fork lineage)', async () => {
       const fix = await makeFixture()
       const { ctx, fiber } = await freshCtx(fix)

@@ -1,6 +1,6 @@
 # Agent Note：外部 Session 事件生产者的声明升级通道
 
-Status: proposed
+Status: implemented
 
 [English](2026-09-13-external-producer-declaration-upgrade.md) | 中文
 

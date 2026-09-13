@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ToolCallId, createMessage, createToolResultMessage, MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import SessionStore, {
   adoptSessionEvent,
+  compareExternalSessionEventProducerVersions,
   SESSION_FORMAT_VERSION,
   Session,
   SessionEvent,
@@ -16,6 +17,7 @@ declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
     'pactflow/project-initialized': { v: 1; name: string }
     'pactflow/project-updated': { v: 1; name: string }
+    'pactflow/project-released': { v: 1; name: string }
   }
 }
 
@@ -1149,6 +1151,129 @@ describe('External session event producers', () => {
       { v: 1, name: 'blocked' },
     )).toThrow(/conflicting declaration/)
     expect(conflicting.events).toHaveLength(1)
+  })
+
+  it('upgrades a session through strictly higher superset declarations', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const extendedTypes = [
+      'pactflow/project-initialized',
+      'pactflow/project-released',
+      'pactflow/project-updated',
+    ] as const
+    const producer10 = ctx.sessions.externalEventProducers.register({
+      producer: '@nous/dsh-pactflow',
+      version: '0.1.0',
+      eventTypes,
+    })
+    const producer20 = ctx.sessions.externalEventProducers.register({
+      producer: '@nous/dsh-pactflow',
+      version: '0.2.0',
+      eventTypes: extendedTypes,
+    })
+    const session = ctx.sessions.create(SessionId('upgraded-external-producer'))
+
+    producer10.append(session, 'pactflow/project-initialized', { v: 1, name: 'v1' })
+    producer20.append(session, 'pactflow/project-released', { v: 1, name: 'v2' })
+
+    expect(session.events.map(event => event.type)).toEqual([
+      'session/external-event-producer',
+      'pactflow/project-initialized',
+      'session/external-event-producer',
+      'pactflow/project-released',
+    ])
+    expect(session.events[2]?.data).toMatchObject({ version: '0.2.0' })
+
+    // An equivalent latest declaration is reused, never rewritten.
+    producer20.append(session, 'pactflow/project-updated', { v: 1, name: 'again' })
+    expect(session.events.filter(event => event.type === 'session/external-event-producer')).toHaveLength(2)
+
+    // The superseded handle is now behind the log: writing with it conflicts.
+    expect(() => producer10.append(
+      session,
+      'pactflow/project-initialized',
+      { v: 1, name: 'stale' },
+    )).toThrow(/conflicting declaration/)
+  })
+
+  it('refuses shrink, equal-version, downgrade, and unorderable redeclarations', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const producer = ctx.sessions.externalEventProducers.register({
+      producer: '@nous/dsh-pactflow',
+      version: '0.3.0',
+      eventTypes,
+    })
+
+    const shrink = ctx.sessions.create(SessionId('shrink-external-producer'))
+    shrink.append('session/external-event-producer', {
+      producer: '@nous/dsh-pactflow', version: '0.2.0',
+      eventTypes: ['pactflow/project-initialized', 'pactflow/project-released', 'pactflow/project-updated'],
+    })
+    expect(() => producer.append(shrink, 'pactflow/project-initialized', { v: 1, name: 'x' }))
+      .toThrow(/conflicting declaration/)
+
+    const equalVersion = ctx.sessions.create(SessionId('equal-version-external-producer'))
+    equalVersion.append('session/external-event-producer', {
+      producer: '@nous/dsh-pactflow', version: '0.3.0',
+      eventTypes: ['pactflow/project-initialized', 'pactflow/project-released', 'pactflow/project-updated'],
+    })
+    expect(() => producer.append(equalVersion, 'pactflow/project-initialized', { v: 1, name: 'x' }))
+      .toThrow(/conflicting declaration/)
+
+    const downgrade = ctx.sessions.create(SessionId('downgrade-external-producer'))
+    downgrade.append('session/external-event-producer', {
+      producer: '@nous/dsh-pactflow', version: '9.0.0', eventTypes: [...eventTypes],
+    })
+    expect(() => producer.append(downgrade, 'pactflow/project-initialized', { v: 1, name: 'x' }))
+      .toThrow(/conflicting declaration/)
+
+    const unorderable = ctx.sessions.create(SessionId('unorderable-external-producer'))
+    unorderable.append('session/external-event-producer', {
+      producer: '@nous/dsh-pactflow', version: 'not.a.semver', eventTypes: [...eventTypes],
+    })
+    expect(() => producer.append(unorderable, 'pactflow/project-initialized', { v: 1, name: 'x' }))
+      .toThrow(/conflicting declaration/)
+    expect(unorderable.events).toHaveLength(1)
+  })
+
+  it('orders prerelease versions under strict semver for upgrades', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const releaseCandidate = ctx.sessions.externalEventProducers.register({
+      producer: '@nous/dsh-pactflow',
+      version: '1.0.0-rc.2',
+      eventTypes,
+    })
+
+    const upgraded = ctx.sessions.create(SessionId('prerelease-upgrade'))
+    upgraded.append('session/external-event-producer', {
+      producer: '@nous/dsh-pactflow', version: '1.0.0-rc.1', eventTypes: [...eventTypes],
+    })
+    releaseCandidate.append(upgraded, 'pactflow/project-initialized', { v: 1, name: 'rc2' })
+    expect(upgraded.events.filter(event => event.type === 'session/external-event-producer')).toHaveLength(2)
+
+    const behind = ctx.sessions.create(SessionId('prerelease-behind'))
+    behind.append('session/external-event-producer', {
+      producer: '@nous/dsh-pactflow', version: '1.0.0', eventTypes: [...eventTypes],
+    })
+    expect(() => releaseCandidate.append(behind, 'pactflow/project-initialized', { v: 1, name: 'x' }))
+      .toThrow(/conflicting declaration/)
+  })
+
+  it('compares producer versions under strict semver ordering', () => {
+    expect(compareExternalSessionEventProducerVersions('1.0.0', '1.0.0')).toBe(0)
+    expect(compareExternalSessionEventProducerVersions('1.0.1', '1.0.0')).toBeGreaterThan(0)
+    expect(compareExternalSessionEventProducerVersions('1.1.0', '1.0.0')).toBeGreaterThan(0)
+    expect(compareExternalSessionEventProducerVersions('2.0.0', '1.9.9')).toBeGreaterThan(0)
+    expect(compareExternalSessionEventProducerVersions('1.0.0-rc.1', '1.0.0')).toBeLessThan(0)
+    expect(compareExternalSessionEventProducerVersions('1.0.0-rc.1', '1.0.0-rc.2')).toBeLessThan(0)
+    expect(compareExternalSessionEventProducerVersions('1.0.0-alpha', '1.0.0-alpha.1')).toBeLessThan(0)
+    expect(compareExternalSessionEventProducerVersions('1.0.0-alpha.1', '1.0.0-beta')).toBeLessThan(0)
+    expect(compareExternalSessionEventProducerVersions('1.0.0-1', '1.0.0-alpha')).toBeLessThan(0)
+    expect(compareExternalSessionEventProducerVersions('1.0.0+build.7', '1.0.0')).toBe(0)
+    expect(() => compareExternalSessionEventProducerVersions('not.a.semver', '1.0.0'))
+      .toThrow(/not valid semver/)
   })
 
   it('validates registration ownership, canonical names, and read-only handles', async () => {

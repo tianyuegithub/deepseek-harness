@@ -36,6 +36,7 @@ export { canonicalHeader, foldRequestHeader, headerEquals } from './request-head
 export { KNOWN_SESSION_EVENT_TYPES } from './known-event-types.ts'
 export {
   assertExternalSessionEventProducerDeclaration,
+  compareExternalSessionEventProducerVersions,
   externalSessionEventProducerEquals,
   ExternalSessionEventProducerRegistry,
 } from './external-event-producers.ts'

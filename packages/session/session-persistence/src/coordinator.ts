@@ -8,6 +8,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import {
   adoptSessionEvent,
+  compareExternalSessionEventProducerVersions,
   interruptedTurnClosers,
   KNOWN_SESSION_EVENT_TYPES,
   SESSION_FORMAT_VERSION,
@@ -1146,6 +1147,8 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     const admitted = new Map<string, string>()
     for (const eventType of KNOWN_SESSION_EVENT_TYPES) admitted.set(eventType, 'DSH core')
     const declaredProducers = new Set<string>()
+    const producerChains = new Map<string, ExternalSessionEventProducerDeclaration[]>()
+    const typeOwnerProducers = new Map<string, string>()
     for (const event of events) {
       if (event.type === 'session/external-event-producer') {
         let declaration: ExternalSessionEventProducerDeclaration
@@ -1161,14 +1164,35 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         if (declaredProducers.has(producerIdentity)) {
           throw this.unsupported(meta, `session "${meta.id}" repeats external event producer "${producerIdentity}" at seq ${event.seq}`)
         }
+        const chain = producerChains.get(declaration.producer)
+        const previous = chain?.at(-1)
+        if (chain !== undefined && previous !== undefined) {
+          // A same-producer re-declaration must be a strict semver upgrade with
+          // a vocabulary superset; anything else makes the segment ownership
+          // ambiguous, so the log fails closed.
+          let upgraded: boolean
+          try {
+            upgraded = compareExternalSessionEventProducerVersions(declaration.version, previous.version) > 0
+          } catch (error: unknown) {
+            throw this.unsupported(meta, `session "${meta.id}" external producer "${producerIdentity}" upgrade from "${previous.producer}@${previous.version}" at seq ${event.seq} is unorderable: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          if (!upgraded) {
+            throw this.unsupported(meta, `session "${meta.id}" external producer "${producerIdentity}" at seq ${event.seq} does not upgrade the earlier declaration "${previous.producer}@${previous.version}"`)
+          }
+          if (previous.eventTypes.some(eventType => !declaration.eventTypes.includes(eventType))) {
+            throw this.unsupported(meta, `session "${meta.id}" external producer "${producerIdentity}" at seq ${event.seq} drops previously declared event types`)
+          }
+        }
         for (const eventType of declaration.eventTypes) {
           const owner = admitted.get(eventType)
-          if (owner !== undefined) {
+          if (owner !== undefined && typeOwnerProducers.get(eventType) !== declaration.producer) {
             throw this.unsupported(meta, `session "${meta.id}" external producer "${producerIdentity}" claims event type "${eventType}" already owned by ${owner}`)
           }
-          admitted.set(eventType, producerIdentity)
+          if (owner === undefined) admitted.set(eventType, producerIdentity)
+          typeOwnerProducers.set(eventType, declaration.producer)
         }
         declaredProducers.add(producerIdentity)
+        producerChains.set(declaration.producer, [...(chain ?? []), declaration])
         continue
       }
       if (admitted.has(event.type)) continue

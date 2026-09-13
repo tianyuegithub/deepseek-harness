@@ -65,6 +65,71 @@ export function externalSessionEventProducerEquals(
     && left.eventTypes.every((eventType, index) => eventType === right.eventTypes[index])
 }
 
+const SEMVER_NUMERIC = '(0|[1-9]\\d*)'
+const SEMVER_PRERELEASE_IDENTIFIER = '(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)'
+const SEMVER_PATTERN = new RegExp(
+  `^${SEMVER_NUMERIC}\\.${SEMVER_NUMERIC}\\.${SEMVER_NUMERIC}`
+  + `(?:-(${SEMVER_PRERELEASE_IDENTIFIER}(?:\\.${SEMVER_PRERELEASE_IDENTIFIER})*))?`
+  + '(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$',
+)
+
+interface ParsedProducerVersion {
+  readonly major: number
+  readonly minor: number
+  readonly patch: number
+  readonly prerelease: readonly (number | string)[]
+}
+
+/** Parse one strict semver version or return `undefined` when it is not one. */
+function parseExternalSessionEventProducerVersion(version: string): ParsedProducerVersion | undefined {
+  const match = version.match(SEMVER_PATTERN)
+  if (match === null) return undefined
+  const prerelease = match[4] === undefined
+    ? []
+    : match[4].split('.').map(identifier => /^\d+$/.test(identifier) ? Number(identifier) : identifier)
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease }
+}
+
+/**
+ * Compare two producer versions under strict semver ordering; build metadata is
+ * ignored. Unparseable versions make upgrade ordering undefinable, so callers
+ * must treat a thrown comparison as a conflict rather than an upgrade.
+ * @param left - first version.
+ * @param right - second version.
+ * @returns negative when `left < right`, zero when equal, positive when `left > right`.
+ */
+export function compareExternalSessionEventProducerVersions(left: string, right: string): number {
+  const parsedLeft = parseExternalSessionEventProducerVersion(left)
+  const parsedRight = parseExternalSessionEventProducerVersion(right)
+  if (parsedLeft === undefined) throw new TypeError(`external session event producer version "${left}" is not valid semver`)
+  if (parsedRight === undefined) throw new TypeError(`external session event producer version "${right}" is not valid semver`)
+  for (const field of ['major', 'minor', 'patch'] as const) {
+    if (parsedLeft[field] !== parsedRight[field]) return parsedLeft[field] - parsedRight[field]
+  }
+  if (parsedLeft.prerelease.length === 0 || parsedRight.prerelease.length === 0) {
+    // A version without a prerelease outranks the same version with one.
+    if (parsedLeft.prerelease.length !== parsedRight.prerelease.length) {
+      return parsedLeft.prerelease.length === 0 ? 1 : -1
+    }
+    return 0
+  }
+  for (let index = 0; index < parsedLeft.prerelease.length; index++) {
+    const leftIdentifier = parsedLeft.prerelease[index]
+    const rightIdentifier = parsedRight.prerelease[index]
+    if (leftIdentifier === undefined || rightIdentifier === undefined) break
+    if (leftIdentifier === rightIdentifier) continue
+    if (typeof leftIdentifier === 'number' && typeof rightIdentifier === 'number') {
+      return leftIdentifier - rightIdentifier
+    }
+    if (typeof leftIdentifier === 'number') return -1
+    if (typeof rightIdentifier === 'number') return 1
+    return leftIdentifier < rightIdentifier ? -1 : 1
+  }
+  // One identifier list is a strict prefix of the other: the longer list is greater.
+  return parsedLeft.prerelease.length < parsedRight.prerelease.length ? -1
+    : parsedLeft.prerelease.length > parsedRight.prerelease.length ? 1 : 0
+}
+
 /**
  * Validate one detached declaration without consulting runtime composition.
  * @param input - candidate durable declaration.
@@ -244,7 +309,11 @@ export class ExternalSessionEventProducerRegistry {
       throw new Error(`session event "${type}" carries non-JSON-serializable data`)
     }
 
-    let matchingDeclaration = false
+    // One producer owns an ordered declaration sequence per session: equivalent
+    // latest declaration reuses the log, a strictly higher version with a
+    // vocabulary superset appends a new declaration, everything else conflicts.
+    const sameProducer: ExternalSessionEventProducerDeclaration[] = []
+    const admittedByDeclarations = new Set<string>()
     for (const event of session.events) {
       if (event.type === 'session/external-event-producer') {
         assertExternalSessionEventProducerDeclaration(event.data)
@@ -253,19 +322,35 @@ export class ExternalSessionEventProducerRegistry {
         if (persisted.producer !== entry.declaration.producer && overlaps) {
           throw new Error(`session "${session.id}" already assigns an event type to producer "${persisted.producer}"`)
         }
-        if (persisted.producer !== entry.declaration.producer) continue
-        if (matchingDeclaration || !externalSessionEventProducerEquals(persisted, entry.declaration)) {
-          throw new Error(`session "${session.id}" has a conflicting declaration for external producer "${entry.declaration.producer}"`)
+        if (persisted.producer === entry.declaration.producer) {
+          sameProducer.push(persisted)
+          for (const eventType of persisted.eventTypes) admittedByDeclarations.add(eventType)
         }
-        matchingDeclaration = true
         continue
       }
-      if (!matchingDeclaration && entry.declaration.eventTypes.includes(event.type)) {
+      if (entry.declaration.eventTypes.includes(event.type) && !admittedByDeclarations.has(event.type)) {
         throw new Error(`session "${session.id}" contains external event "${event.type}" before its producer declaration`)
       }
     }
 
-    if (!matchingDeclaration) {
+    const latest = sameProducer.at(-1)
+    if (latest !== undefined
+      && !externalSessionEventProducerEquals(latest, entry.declaration)) {
+      let upgradeable = false
+      try {
+        upgradeable = sameProducer.every(persisted =>
+          compareExternalSessionEventProducerVersions(entry.declaration.version, persisted.version) > 0)
+          && latest.eventTypes.every(eventType => entry.declaration.eventTypes.includes(eventType))
+      } catch {
+        upgradeable = false
+      }
+      if (!upgradeable) {
+        throw new Error(`session "${session.id}" has a conflicting declaration for external producer "${entry.declaration.producer}"`)
+      }
+    }
+
+    if (latest === undefined
+      || !externalSessionEventProducerEquals(latest, entry.declaration)) {
       session.append('session/external-event-producer', entry.declaration)
     }
     const writableSession = session as unknown as {

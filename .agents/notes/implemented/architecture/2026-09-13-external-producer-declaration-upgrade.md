@@ -1,6 +1,6 @@
 # Agent Note: Declaration upgrades for external session event producers
 
-Status: proposed
+Status: implemented
 
 English | [中文](2026-09-13-external-producer-declaration-upgrade.zh.md)
 
