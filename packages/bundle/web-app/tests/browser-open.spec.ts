@@ -80,6 +80,7 @@ describe('web app browser startup', () => {
       __dshWebAppApply: typeof apply
       __dshWebServer: typeof WebServer
       __dshConnection: {
+        browserSessions: { readiness(): { available: boolean } }
         authenticatedUrl(baseUrl: string): string
         authorizeIndex(): boolean
         requestRejection(): undefined
@@ -89,6 +90,7 @@ describe('web app browser startup', () => {
     globals.__dshWebAppApply = apply
     globals.__dshWebServer = WebServer
     globals.__dshConnection = {
+      browserSessions: { readiness: () => ({ available: false }) },
       authenticatedUrl: (baseUrl) => {
         const url = new URL(baseUrl)
         url.searchParams.set('token', 'fixture-token')

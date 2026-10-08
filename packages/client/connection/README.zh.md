@@ -15,6 +15,7 @@ kind: "package-reference"
 
 - [使用本包](#use-this-package)
 - [浏览器认证与请求信任](#browser-authentication-and-request-trust)
+- [宿主受管会话](#managed-host-sessions)
 - [Connection generation](#connection-generation)
 - [模型体验](#model-experience)
 - [已知限制与暂缓事项](#known-limitations-and-deferred-work)
@@ -38,6 +39,13 @@ cookie 签名密钥是 `ctx.credentials` 中由 `client-connection/browser-sessi
 
 认证之前，每个请求仍经过 `src/api-request-trust.ts`。其 `Host` 必须是 loopback，或与 `trustedHosts` 条目匹配：带端口的 `host:port` 精确匹配，不带端口的条目匹配任意端口，两侧均经 WHATWG 归一化。若附带 `Origin`，它必须等于该 Host；`sec-fetch-site: cross-site` 一律拒绝。畸形配置 authority 会让插件加载失败。这些检查防御 DNS rebinding 与跨站浏览器请求，绝不建立身份。Host/Origin 校验失败返回 403；Host 可信但未认证的请求返回 401。`dsh web --host 0.0.0.0` 仍不受支持。决策记录：[浏览器请求信任](../../../.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.zh.md)与[浏览器令牌认证](../../../.agents/notes/implemented/architecture/2026-08-24-browser-token-authentication.zh.md)。
 
+<a id="managed-host-sessions"></a>
+## 宿主受管会话
+
+集成方可在Connection配置项中用`managedBrowserSessions: { port, maxRecords }`显式启用。两个值都必填；省略即禁用受管创建和认证。仅宿主可用的`ctx.connection.browserSessions`接口创建待激活凭据，在60秒内激活，并立即撤销。它不注册浏览器Remote方法。Connection重载或释放使全部受管凭据失效，独立于持久签名密钥。[接口类型](src/browser-session-api.ts)定义调用义务；[决策记录](../../../.agents/notes/proposed/feature/2026-10-07-managed-browser-sessions.zh.md)拥有取舍及集成验收条件。
+
+私有HTTP消费方仅绑定`127.0.0.1:<port>`，要求精确Host且没有Origin，接受固定正文长度的至多4 KiB JSON，并把凭据绑定规范HTTPS来源。它不授权平台用户。平台适配器须验证实例归属、隔离自身签名密钥、剥离浏览器传入的原生凭据，并使此端口不进入公开服务。终态记录保留至绝对期限与终态后五分钟的较晚时刻，计入maxRecords且不会为接纳新操作而驱逐；容量不足返回429。普通浏览器凭据保持独立认证行为。
+
 <a id="connection-generation"></a>
 ## Connection generation
 
@@ -60,7 +68,7 @@ API Gateway Client 把内部 `$events` logical stream 注册为唯一 generation
 
 - **`/api` 桥把每个请求体整体缓冲在内存里**：`maxRequestBodyBytes`（默认 300 MiB，按默认 200 MiB 图片总量上限经 base64 膨胀加信封余量得出）因此同时是单请求的驻留内存上界；要降低它而不缩小图片限额，需要流式请求体路径。
 - **浏览器 cookie 不带 `Secure`**：随附载体是 loopback HTTP；若部署经明文网络暴露同一 authority，bearer cookie 可能在传输中泄露。
-- **没有 logout 操作**：清除浏览器 cookie 会结束单个浏览器会话；删除 owner 凭据记录并重启 `dsh` 会撤销全部会话。
+- **普通浏览器凭据没有逐会话注销接口**：清除浏览器cookie会结束单个浏览器会话；删除owner凭据记录并重启`dsh`会撤销全部会话。宿主受管会话提供显式撤销。
 
 
 <a id="dev-note"></a>

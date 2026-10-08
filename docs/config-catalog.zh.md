@@ -410,7 +410,7 @@ export type Config = LocalConfig
 
 ## `@deepseek-ai/dsh-client-connection`
 
-需要：`webServer` · `credentials`
+需要： `webServer` · `credentials`
 
 ```ts config-catalog
 /** Plugin config: the deployment's non-loopback serving authorities. */
@@ -428,10 +428,20 @@ export interface ConnectionConfig {
   cookieMaxAgeDays?: number
   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
   maxRequestBodyBytes?: number
+  /** Omitted disables managed minting and verification; explicit port and capacity are required. */
+  managedBrowserSessions?: ManagedBrowserSessionsConfig
+}
+
+/** Explicit opt-in and retained-record capacity for the private bridge. */
+export interface ManagedBrowserSessionsConfig {
+  /** Loopback TCP port; no all-interface bind is supported. */
+  port: number
+  /** Pending, active, and retained terminal records share this hard limit. */
+  maxRecords: number
 }
 ```
 
-来源：[`packages/client/connection/src/index.ts:55`](../packages/client/connection/src/index.ts)
+来源： [`packages/client/connection/src/index.ts:79`](../packages/client/connection/src/index.ts)
 
 <a id="deepseek-aidsh-client-hmr"></a>
 

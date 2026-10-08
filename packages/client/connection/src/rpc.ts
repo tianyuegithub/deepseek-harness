@@ -185,6 +185,8 @@ export interface HostConnectionRpc {
 
 /** Host `ctx.connection` shape consumed by transport-independent adapters. */
 export interface HostConnectionHandle {
+  /** Host-only session management; never registered as a browser RPC endpoint. */
+  readonly browserSessions: import('./browser-session-api.ts').HostBrowserSessions
   /** Generic RPC channel registry. */
   readonly rpc: HostConnectionRpc
   /** Exact Fetch routes for streaming or browser-native responses. */

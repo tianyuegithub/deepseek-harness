@@ -60,6 +60,11 @@ export class HostConnectionService extends Service implements HostConnectionHand
   private readonly interceptors = new Map<string, ConnectionRpcInterceptor>()
   private readonly fetchRoutes = new Map<string, RegisteredFetchRoute>()
 
+  /** Host-only native session management, independent of the browser RPC registry. */
+  get browserSessions(): import('./browser-session-api.ts').HostBrowserSessions {
+    return this.browserAuth.browserSessions
+  }
+
   /**
    * Provide the Host half over the active HTTP server.
    * @param ctx - owning Connection plugin context.

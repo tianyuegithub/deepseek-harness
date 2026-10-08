@@ -269,20 +269,22 @@ export function apply(ctx: Context, config: Config): void {
       const announceReady = (): void => {
         if (ANNOUNCED_ROOTS.has(connectionCtx.root)) return
         const webUrl = localWebUrl(connectionCtx)
-        const authenticatedUrl = connectionCtx.connection.authenticatedUrl(webUrl)
+        const managed = connectionCtx.connection.browserSessions.readiness().available
+        const announcedUrl = managed ? new URL(webUrl).href : connectionCtx.connection.authenticatedUrl(webUrl)
         // Reuse the exact LAN snapshot provided to the /api trust fence.
         const lanCandidate = runtime.lanAddresses[0]
         const port = connectionCtx.webServer.port
         const lanUrl = lanCandidate === undefined
           ? undefined
-          : connectionCtx.connection.authenticatedUrl(`http://${lanCandidate}:${String(port)}`)
+          : managed ? `http://${lanCandidate}:${String(port)}/`
+            : connectionCtx.connection.authenticatedUrl(`http://${lanCandidate}:${String(port)}`)
         ANNOUNCED_ROOTS.add(connectionCtx.root)
         if (config.printUrl) {
-          console.log(`dsh web: ${authenticatedUrl}${lanUrl === undefined ? '' : ` (LAN: ${lanUrl})`}`)
+          console.log(`dsh web: ${announcedUrl}${lanUrl === undefined ? '' : ` (LAN: ${lanUrl})`}`)
         }
-        if (handoffBrowser) {
+        if (handoffBrowser && !managed) {
           console.log('dsh web: opening the default browser; pass --no-open to disable')
-          void internals.openBrowser(authenticatedUrl).catch((error: unknown) => {
+          void internals.openBrowser(announcedUrl).catch((error: unknown) => {
             const reason = error instanceof Error ? error.message : String(error)
             console.error(`web-app: could not open the default browser because ${reason}; use the dsh web URL printed at startup`)
           })

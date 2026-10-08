@@ -10,6 +10,15 @@ import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority } from './api-request-trust.ts'
 import { BrowserAuth } from './browser-auth.ts'
 import { HostConnectionService } from './rpc-host.ts'
+import { listenBrowserSessionBridge } from './browser-session-bridge.ts'
+import type { ManagedBrowserSessionsConfig } from './browser-session-api.ts'
+
+export type {
+  BrowserExchangeId, BrowserSessionId, BrowserRuntimeGeneration, BrowserSessionCreate,
+  ManagedBrowserCredential, BrowserSessionsReadiness, HostBrowserSessions,
+  ManagedBrowserSessionsConfig,
+} from './browser-session-api.ts'
+export { BrowserSessionError } from './browser-sessions.ts'
 
 export type {
   ConnectionFetchMethod,
@@ -81,12 +90,19 @@ export interface ConnectionConfig {
   cookieMaxAgeDays?: number
   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
   maxRequestBodyBytes?: number
+  /** Omitted disables managed minting and verification; explicit port and capacity are required. */
+  managedBrowserSessions?: ManagedBrowserSessionsConfig
 }
 
 export const Config: z<ConnectionConfig> = z.object({
   trustedHosts: z.array(String).default([]),
   cookieMaxAgeDays: z.natural().min(1).default(30),
   maxRequestBodyBytes: z.natural().min(1).default(DEFAULT_MAX_REQUEST_BODY_BYTES),
+  // Schemastery objects default to {}; the union preserves absence as disabled.
+  managedBrowserSessions: z.union([z.object({
+    port: z.natural().min(1).max(65535).required(),
+    maxRecords: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).required(),
+  })]),
 })
 
 /**
@@ -105,10 +121,26 @@ export async function apply(ctx: Context, config?: ConnectionConfig): Promise<vo
   // silently authorizing its hostname prefix at request time.
   for (const entry of trustedHosts) assertTrustedAuthority(entry)
   assertImageBodyCapacity(ctx, maxRequestBodyBytes)
+  const managed = config?.managedBrowserSessions
+  if (managed !== undefined && (!Number.isSafeInteger(managed.port) || managed.port < 1
+    || managed.port > 65535 || !Number.isSafeInteger(managed.maxRecords) || managed.maxRecords < 1)) {
+    throw new Error('client-connection: managedBrowserSessions requires a TCP port and positive capacity')
+  }
+  const browserAuth = await BrowserAuth.create(ctx.root, ctx.credentials, cookieMaxAgeDays, managed?.maxRecords)
+  ctx.effect(() => () => { browserAuth.browserSessions.dispose() }, 'client-connection: managed authentication')
+  if (managed !== undefined) {
+    await ctx.effect(async () => {
+      const close = await listenBrowserSessionBridge(browserAuth.browserSessions, managed.port)
+      return async () => {
+        browserAuth.browserSessions.dispose()
+        await close()
+      }
+    }, 'client-connection: private browser-session bridge')
+  }
   const connection = new HostConnectionService(
     ctx,
     trustedHosts,
-    await BrowserAuth.create(ctx.root, ctx.credentials, cookieMaxAgeDays),
+    browserAuth,
   )
   const fetchHandler = connection.createSharedFetchHandler(API_PATH)
   const route: WebRoute = {

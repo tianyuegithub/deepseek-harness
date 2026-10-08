@@ -17,6 +17,7 @@ import { createLaunchEnvironmentSnapshot, DSH_LAUNCH_ENVIRONMENT_KEY } from '@de
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver'
 import { apply, Config, internals } from '../src/index.ts'
+import * as WebApp from '../src/index.ts'
 
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<typeof import('node:child_process')>(),
@@ -84,18 +85,21 @@ function fakeHttpServer(host: '127.0.0.1' | '0.0.0.0' = '127.0.0.1'): { server: 
 }
 
 /** Deterministic Host Connection face for URL publication and frontend injection. */
-function provideConnection(ctx: Context): void {
+function provideConnection(ctx: Context, managed = false) {
+  const authenticatedUrl = vi.fn((baseUrl: string) => {
+    const url = new URL(baseUrl)
+    url.pathname = '/'
+    url.searchParams.set('token', 'test-token')
+    return url.href
+  })
   ctx.provide('connection', {
-    authenticatedUrl(baseUrl: string) {
-      const url = new URL(baseUrl)
-      url.pathname = '/'
-      url.searchParams.set('token', 'test-token')
-      return url.href
-    },
+    authenticatedUrl,
+    browserSessions: { readiness: () => ({ available: managed }) },
     authorizeIndex: () => true,
     requestRejection: () => undefined,
     rpc: {},
   } as never)
+  return authenticatedUrl
 }
 
 /** A fake Loader whose settlement the test controls (the URL line waits on it). */
@@ -110,6 +114,27 @@ interface BashContribution {
 }
 
 describe('web-app runtime glue', () => {
+  it('announces clean addresses and suppresses native browser handoff in managed mode', async () => {
+    stageDist()
+    const ctx = new Context()
+    ctx.provide('webServer', fakeHttpServer('0.0.0.0').server)
+    const authenticatedUrl = provideConnection(ctx, true)
+    provideLoader(ctx)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const openBrowser = vi.fn(async () => {})
+    internals.openBrowser = openBrowser
+    try {
+      await ctx.plugin(WebApp, new Config({ openBrowser: true, printUrl: true, surfaceContext: false, trustedHosts: [] }))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(log).toHaveBeenCalledWith('dsh web: http://127.0.0.1:4567/ (LAN: http://192.168.1.5:4567/)')
+      expect(authenticatedUrl).not.toHaveBeenCalled()
+      expect(openBrowser).not.toHaveBeenCalled()
+      expect(log.mock.calls.every(call => !String(call[0]).includes('token='))).toBe(true)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('mounts dist serving, prompt section, bash variables, and publishes the URL with the LAN snapshot', async () => {
     stageDist()
     const ctx = new Context()

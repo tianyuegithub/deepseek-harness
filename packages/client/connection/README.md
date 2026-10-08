@@ -15,6 +15,7 @@ The package carries browser-to-Host Remote calls, exact Fetch responses, and con
 
 - [Use this package](#use-this-package)
 - [Browser authentication and request trust](#browser-authentication-and-request-trust)
+- [Managed Host sessions](#managed-host-sessions)
 - [Connection generation](#connection-generation)
 - [Model Experience](#model-experience)
 - [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
@@ -38,6 +39,13 @@ The cookie signing secret is the owner-scoped `client-connection/browser-session
 
 Before authentication, every request still passes `src/api-request-trust.ts`. Its `Host` must be loopback or match a `trustedHosts` entry: exact on `host:port`, any port on port-less entries, both sides WHATWG-normalized. An attached `Origin` must equal that Host and `sec-fetch-site: cross-site` is refused. Malformed configured authorities fail plugin load. These checks defend DNS rebinding and cross-site browser requests; they never establish identity. A failed Host/Origin check returns 403, while a trusted but unauthenticated request returns 401. `dsh web --host 0.0.0.0` remains unsupported. Decision records: [browser request trust](../../../.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.md) and [browser token authentication](../../../.agents/notes/implemented/architecture/2026-08-24-browser-token-authentication.md).
 
+<a id="managed-host-sessions"></a>
+## Managed Host sessions
+
+An integration can opt in with `managedBrowserSessions: { port, maxRecords }` in the Connection row. Both values are required; omission disables managed creation and authentication. The Host-only `ctx.connection.browserSessions` API creates pending credentials, activates them within 60 seconds, and revokes them immediately. It never registers browser Remote methods. A Connection reload or disposal invalidates all managed credentials independently of the persistent signing secret. The [API types](src/browser-session-api.ts) define caller obligations; [the decision record](../../../.agents/notes/proposed/feature/2026-10-07-managed-browser-sessions.md) owns the trade-offs and integration acceptance criteria.
+
+The private HTTP consumer binds only `127.0.0.1:<port>`, requires that exact Host and no Origin, accepts at most 4 KiB of JSON with a fixed content length, and binds credentials to canonical HTTPS origins. It does not authorize platform users. The platform adapter must enforce instance ownership, isolate its own signing secret, strip browser-supplied native cookies, and keep this port outside public services. Terminal records remain until the later of their absolute expiry and five minutes after termination, count against maxRecords, and are never evicted to admit another operation; capacity exhaustion returns 429. Ordinary browser cookies retain their separate authentication behavior.
+
 <a id="connection-generation"></a>
 ## Connection generation
 
@@ -60,7 +68,7 @@ None; this package neither assembles nor sends a provider request.
 
 - **The `/api` bridge buffers each request body in memory** — `maxRequestBodyBytes` (default 300 MiB, sized for the default 200 MiB aggregate image limit after base64 expansion plus envelope headroom) is therefore also the per-request resident bound; a streaming body path would be needed to lower it without shrinking the image limits.
 - **The browser cookie is not marked `Secure`** — loopback HTTP is the shipped transport, so exposing the same authority over plaintext networking can expose the bearer cookie in transit.
-- **There is no logout operation** — clearing the browser cookie ends one browser session; deleting the owner credential record and restarting `dsh` revokes every session.
+- **Ordinary browser cookies have no per-session logout API** — clearing the browser cookie ends one browser session; deleting the owner credential record and restarting `dsh` revokes every session. Managed Host sessions expose explicit revocation.
 
 
 <a id="dev-note"></a>

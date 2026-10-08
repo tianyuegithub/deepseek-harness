@@ -3,6 +3,8 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { credentialKey } from '@deepseek-ai/dsh-credentials'
 import type { CredentialProvider, CredentialRecord } from '@deepseek-ai/dsh-credentials'
+import { ManagedBrowserSessions } from './browser-sessions.ts'
+import type { ManagedBrowserCookiePayload } from './browser-session-api.ts'
 import type {
   ConnectionIndexRequest,
   ConnectionIndexResponse,
@@ -126,15 +128,16 @@ function signature(secret: Buffer, body: string): Buffer {
   return createHmac('sha256', secret).update(body).digest()
 }
 
-function encodeCookie(payload: BrowserCookiePayload, secret: Buffer): string {
+function encodeCookie(payload: BrowserCookiePayload | ManagedBrowserCookiePayload, secret: Buffer): string {
   const body = encodeBase64Url(Buffer.from(JSON.stringify(payload), 'utf8'))
-  return `v1.${body}.${encodeBase64Url(signature(secret, body))}`
+  return `v${String(payload.version)}.${body}.${encodeBase64Url(signature(secret, body))}`
 }
 
-function decodeCookie(value: string, secret: Buffer): BrowserCookiePayload | undefined {
+function decodeCookie(value: string, secret: Buffer): BrowserCookiePayload | ManagedBrowserCookiePayload | undefined {
   const parts = value.split('.')
   const [version, body, encodedSignature] = parts
-  if (parts.length !== 3 || version !== 'v1' || body === undefined || encodedSignature === undefined) {
+  if (parts.length !== 3 || (version !== 'v1' && version !== 'v2')
+    || body === undefined || encodedSignature === undefined) {
     return undefined
   }
   const actualSignature = decodeBase64Url(encodedSignature)
@@ -151,11 +154,14 @@ function decodeCookie(value: string, secret: Buffer): BrowserCookiePayload | und
     return undefined
   }
   if (!isRecord(decoded)
-    || decoded.version !== COOKIE_PAYLOAD_VERSION
+    || (decoded.version !== 1 && decoded.version !== 2)
+    || version !== `v${String(decoded.version)}`
     || typeof decoded.authority !== 'string'
     || !Number.isSafeInteger(decoded.issuedAt)
     || !Number.isSafeInteger(decoded.expiresAt)) return undefined
-  return decoded as unknown as BrowserCookiePayload
+  if (decoded.version === 2 && (typeof decoded.sessionId !== 'string'
+    || typeof decoded.runtimeGeneration !== 'string')) return undefined
+  return decoded as unknown as BrowserCookiePayload | ManagedBrowserCookiePayload
 }
 
 async function initializeSecret(credentials: CredentialProvider): Promise<Buffer> {
@@ -185,11 +191,14 @@ async function initializeSecret(credentials: CredentialProvider): Promise<Buffer
 export class BrowserAuth {
   private readonly launchToken: string
   private readonly maxAgeMilliseconds: number
+  /** Host-only managed owner; omitted capacity disables both minting and verification. */
+  readonly browserSessions: ManagedBrowserSessions
 
   private constructor(
     processOwner: object,
     private readonly secret: Buffer,
     maxAgeDays: number,
+    maxManagedRecords?: number,
   ) {
     this.launchToken = processLaunchToken(processOwner)
     this.maxAgeMilliseconds = maxAgeDays * DAY_MILLISECONDS
@@ -197,6 +206,11 @@ export class BrowserAuth {
       || !Number.isSafeInteger(Date.now() + this.maxAgeMilliseconds)) {
       throw new Error('client-connection: cookieMaxAgeDays exceeds the safe timestamp range')
     }
+    this.browserSessions = new ManagedBrowserSessions(
+      maxManagedRecords,
+      this.maxAgeMilliseconds,
+      payload => `${cookieName(payload.authority)}=${encodeCookie(payload, this.secret)}`,
+    )
   }
 
   /**
@@ -205,14 +219,16 @@ export class BrowserAuth {
    * @param processOwner - root application context retaining one token across Connection reloads.
    * @param credentials - persistent credential provider for the Web profile.
    * @param maxAgeDays - positive absolute browser-cookie lifetime in days.
+   * @param maxManagedRecords - explicit managed-record capacity; omitted disables managed authentication.
    * @returns initialized authentication owner with the process owner's launch token.
    */
   static async create(
     processOwner: object,
     credentials: CredentialProvider,
     maxAgeDays: number,
+    maxManagedRecords?: number,
   ): Promise<BrowserAuth> {
-    return new BrowserAuth(processOwner, await initializeSecret(credentials), maxAgeDays)
+    return new BrowserAuth(processOwner, await initializeSecret(credentials), maxAgeDays, maxManagedRecords)
   }
 
   /**
@@ -295,10 +311,11 @@ export class BrowserAuth {
     const payload = decodeCookie(value, this.secret)
     if (payload === undefined || payload.authority !== authority) return false
     const now = Date.now()
-    return payload.issuedAt <= now
+    const validTime = payload.issuedAt <= now
       && payload.expiresAt > now
       && payload.expiresAt > payload.issuedAt
       && payload.expiresAt - payload.issuedAt <= this.maxAgeMilliseconds
+    return validTime && (payload.version === 1 || this.browserSessions.accepts(payload))
   }
 
   private writeUnauthorized(req: ConnectionIndexRequest, res: ConnectionIndexResponse): void {

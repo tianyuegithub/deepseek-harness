@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Run `dsh --profile web` and the interface opens in your default browser, ready for interactive chat with the agent. You get the conversation view, model and settings management, and session history, backed by the same model access, tools, and safety defaults as every other surface. The command prints a tokenized startup URL; the browser exchanges that token for a signed session cookie and redirects to the clean root URL. You can change the port, suppress the browser handoff, and allow extra hosts from the command line; binding all network interfaces is intentionally not supported. Choose it for interactive work in the browser; `dsh-headless` is the one-shot command-line sibling.
+Run `dsh --profile web` and the interface opens in your default browser, ready for interactive chat with the agent. You get the conversation view, model and settings management, and session history, backed by the same model access, tools, and safety defaults as every other surface. In ordinary mode, the command prints a tokenized startup URL; the browser exchanges that token for a signed session cookie and redirects to the clean root URL. You can change the port, suppress the browser handoff, and allow extra hosts from the command line; binding all network interfaces is intentionally not supported. Choose it for interactive work in the browser; `dsh-headless` is the one-shot command-line sibling.
 
 ## Table of Contents
 
@@ -35,6 +35,8 @@ dsh --profile web --no-open --port 8080
 ```
 
 After startup you see a `dsh web:` line whose root URL carries a fresh process token. Unless `--no-open` or an SSH session suppresses it, the default browser opens that URL, receives a signed cookie, and redirects to the clean root page. You know it worked when the page loads and you can chat with the agent. Two failures to expect: if the frontend is not built, startup stops with a build hint (`pnpm run build` in a checkout); if the browser cannot be opened, a credential-free diagnostic prints to stderr while the server keeps running — open the printed startup URL yourself.
+
+When Connection opts into managedBrowserSessions, startup prints clean local and LAN root URLs and suppresses the native browser handoff even when openBrowser is true. Users enter through the platform gateway, which owns their public session; the runtime never calls authenticatedUrl for this announcement.
 
 ### Configuration
 
